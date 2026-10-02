@@ -1,0 +1,39 @@
+[package]
+name = "emrakul"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/cramt/emrakul"
+
+[dependencies]
+anyhow = "1"
+facet = "0.46"
+facet-toml = "0.46"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Pinned to the rev niri 26.04 ships, because that exact code is what was seen
+# driving ganymede's TV off its GTX 1050 Ti (Pascal, legacy 580 driver) before
+# any of this was written. Move it deliberately, and re-test on that box.
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+default-features = false
+features = [
+    "backend_drm",
+    "backend_egl",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+    "desktop",
+    "renderer_gl",
+    "wayland_frontend",
+]
+
+[dependencies.smithay-drm-extras]
+# Only the connector scanner. display-info (EDID make/model for wl_output) is
+# off until something shows those names.
+default-features = false
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
