@@ -1,45 +1,100 @@
 //! Controllers, read straight from their evdev nodes. libinput ignores
 //! joysticks, so it never sees them.
 //!
-//! The Steam button goes Home from anywhere. On Home, a minimal stand-in
-//! moves the focus (D-pad, or the left stick past its deadzone) and launches
-//! (A). The full controller table is still to be decided; [`Pad::on_event`]
-//! is the one place it would replace.
+//! [`Pad`] turns a controller into what a web app understands: keys on the
+//! seat keyboard, and a pointer. Home reads the same keys (arrows and
+//! Enter), so it has no mapping of its own. The Steam button goes Home from
+//! anywhere.
 
 use std::{
     os::fd::OwnedFd,
     path::{Path, PathBuf},
 };
 
-use evdev::{AbsoluteAxisCode, EventSummary, InputEvent, KeyCode};
-use smithay::reexports::{
-    calloop::{Interest, Mode, PostAction, RegistrationToken, generic::Generic},
-    udev,
+use evdev::{AbsoluteAxisCode, EventSummary, InputEvent, KeyCode, SynchronizationCode};
+use smithay::{
+    backend::input::{ButtonState, KeyState},
+    reexports::{
+        calloop::{Interest, Mode, PostAction, RegistrationToken, generic::Generic},
+        udev,
+    },
+    utils::{Logical, Point},
 };
 
-use crate::{idle::Activity, lifecycle::HomeKey, state::Emrakul};
+use crate::{idle::Activity, state::Emrakul};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PadAction {
     GoHome,
-    Home(HomeKey),
+    /// A key on the seat keyboard, as an evdev keyboard code.
+    Key(KeyCode, KeyState),
+    /// Move the pointer this far.
+    Move(Point<f64, Logical>),
+    /// The pointer's left button.
+    Click(ButtonState),
+    /// Scroll this far, in wl_pointer's terms: positive is down or right.
+    Scroll(Point<f64, Logical>),
+    /// The finger left the scrolling trackpad, so the client may coast.
+    ScrollStop,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Binding {
+    GoHome,
+    Click,
+    /// Pressed in order and released in reverse, so a modifier wraps its key.
+    Keys(&'static [KeyCode]),
+}
+
+/// What each button does: one map for every web app, from
+/// <https://github.com/cramt/emrakul/issues/8>. Menu (`BTN_START`) is kept
+/// for the on-screen keyboard.
+fn binding(button: KeyCode) -> Option<Binding> {
+    use KeyCode as K;
+    Some(match button {
+        K::BTN_MODE => Binding::GoHome,
+        K::BTN_THUMB2 => Binding::Click,
+        K::BTN_DPAD_UP => Binding::Keys(&[K::KEY_UP]),
+        K::BTN_DPAD_DOWN => Binding::Keys(&[K::KEY_DOWN]),
+        K::BTN_DPAD_LEFT => Binding::Keys(&[K::KEY_LEFT]),
+        K::BTN_DPAD_RIGHT => Binding::Keys(&[K::KEY_RIGHT]),
+        K::BTN_SOUTH => Binding::Keys(&[K::KEY_ENTER]),
+        // Back. Alt+Left is history back in YouTube and Jellyfin alike;
+        // Escape only closes menus in YouTube.
+        K::BTN_EAST => Binding::Keys(&[K::KEY_LEFTALT, K::KEY_LEFT]),
+        K::BTN_NORTH => Binding::Keys(&[K::KEY_K]),
+        K::BTN_WEST => Binding::Keys(&[K::KEY_F]),
+        K::BTN_TL => Binding::Keys(&[K::KEY_J]),
+        K::BTN_TR => Binding::Keys(&[K::KEY_L]),
+        K::BTN_SELECT => Binding::Keys(&[K::KEY_ESC]),
+        _ => return None,
+    })
 }
 
 /// How far a stick axis must lean, as a fraction of its half-range, to count
 /// as a push. The Steam Controller's sticks wander by about 1.5% at rest.
 const PUSH: f32 = 0.5;
-/// How far back it must come before the next push counts.
+/// How far back it must come before the push ends.
 const RECENTRE: f32 = 0.25;
 /// How far a stick must lean, or a trigger be pulled, to count as activity:
 /// far enough that drift at rest never holds the screen on.
 const ACTIVE: f32 = 0.25;
+/// Screen pixels per trackpad unit: a swipe across the whole pad (65534
+/// units) moves the pointer, or scrolls, the width of the TV. A first guess,
+/// to be tuned on the couch.
+const PAD_PIXELS: f64 = 3840.0 / 65534.0;
 
-/// One controller's view of the stand-in mapping. Sticks only step the focus
-/// on the way out past [`PUSH`], so holding one steps once.
+/// One controller's state. A stick holds an arrow while pushed past
+/// [`PUSH`]; a trackpad moves by how far the finger went since the last
+/// frame.
 #[derive(Debug)]
 pub struct Pad {
-    x: Axis,
-    y: Axis,
+    x: Stick,
+    y: Stick,
+    pointer: Trackpad,
+    scroll: Trackpad,
+    /// Buttons whose press woke the screen. Their release goes with it.
+    swallowed: Vec<KeyCode>,
     /// Every absolute axis the controller reports, for telling activity
     /// from drift.
     ranges: Vec<(AbsoluteAxisCode, AxisRange)>,
@@ -49,39 +104,112 @@ pub struct Pad {
 pub struct AxisRange {
     pub min: i32,
     pub max: i32,
+    /// The kernel drops changes smaller than half this, and smooths ones up
+    /// to twice this towards the last value it let through.
+    pub fuzz: i32,
 }
 
 #[derive(Debug)]
-struct Axis {
+struct Stick {
     range: AxisRange,
-    pushed: bool,
+    /// The arrows for leaning negative (left, or up: evdev's Y grows
+    /// downwards) and positive.
+    arrows: (KeyCode, KeyCode),
+    lean: Lean,
 }
 
-impl Axis {
-    fn new(range: AxisRange) -> Self {
+#[derive(Debug, Clone, Copy)]
+enum Lean {
+    Rest,
+    Held(KeyCode),
+    /// Pushed to wake the screen: holds nothing, and its return does nothing.
+    Swallowed,
+}
+
+impl Stick {
+    fn new(range: AxisRange, arrows: (KeyCode, KeyCode)) -> Self {
         Self {
             range,
-            pushed: false,
+            arrows,
+            lean: Lean::Rest,
         }
     }
 
-    /// The focus step this value makes, if it is a fresh push. Negative
-    /// (left, or up: evdev's Y grows downwards) is Previous.
-    fn step(&mut self, value: i32) -> Option<HomeKey> {
+    fn on_value(&mut self, value: i32, wakes: bool) -> Option<PadAction> {
         let lean = self.range.lean(value);
-        if self.pushed {
-            self.pushed = lean.abs() > RECENTRE;
-            return None;
+        match self.lean {
+            Lean::Held(_) | Lean::Swallowed if lean.abs() > RECENTRE => None,
+            Lean::Held(key) => {
+                self.lean = Lean::Rest;
+                Some(PadAction::Key(key, KeyState::Released))
+            }
+            Lean::Swallowed => {
+                self.lean = Lean::Rest;
+                None
+            }
+            Lean::Rest if lean.abs() < PUSH => None,
+            Lean::Rest if wakes => {
+                self.lean = Lean::Swallowed;
+                None
+            }
+            Lean::Rest => {
+                let key = if lean < 0.0 {
+                    self.arrows.0
+                } else {
+                    self.arrows.1
+                };
+                self.lean = Lean::Held(key);
+                Some(PadAction::Key(key, KeyState::Pressed))
+            }
         }
-        if lean.abs() < PUSH {
-            return None;
+    }
+}
+
+/// A trackpad reports where the finger is, and (0, 0) once it lifts. Its
+/// axes arrive one at a time, so the position is only whole at the end of a
+/// frame (`SYN_REPORT`).
+#[derive(Debug, Default)]
+struct Trackpad {
+    /// The latest value of each axis. evdev only sends the ones that change.
+    now: (i32, i32),
+    /// Where the finger was at the end of the last frame.
+    touch: Option<(i32, i32)>,
+    /// How near the middle, on each axis, counts as lifted: the axis's
+    /// fuzz. The kernel's fuzz filter turns a lift from within twice the
+    /// fuzz of the middle into half its value, then creeps towards 0 and
+    /// stops short, so (0, 0) alone would miss it and the next touch would
+    /// jump the pointer. A finger crossing the small square in the middle
+    /// loses only those frames' travel.
+    lifted: (i32, i32),
+}
+
+enum Stroke {
+    Moved(Point<f64, Logical>),
+    Lifted,
+}
+
+impl Trackpad {
+    fn new(x: AxisRange, y: AxisRange) -> Self {
+        Self {
+            lifted: (x.fuzz, y.fuzz),
+            ..Self::default()
         }
-        self.pushed = true;
-        Some(if lean < 0.0 {
-            HomeKey::Previous
-        } else {
-            HomeKey::Next
-        })
+    }
+
+    fn end_frame(&mut self) -> Option<Stroke> {
+        let (x, y) = self.now;
+        let lifted = x.abs() <= self.lifted.0 && y.abs() <= self.lifted.1;
+        let touch = (!lifted).then_some(self.now);
+        let stroke = match (self.touch, touch) {
+            (Some(was), Some(is)) if was != is => Some(Stroke::Moved(Point::from((
+                f64::from(is.0 - was.0) * PAD_PIXELS,
+                f64::from(is.1 - was.1) * PAD_PIXELS,
+            )))),
+            (Some(_), None) => Some(Stroke::Lifted),
+            _ => None,
+        };
+        self.touch = touch;
+        stroke
     }
 }
 
@@ -111,10 +239,21 @@ impl AxisRange {
 
 impl Pad {
     pub fn new(ranges: &[(AbsoluteAxisCode, AxisRange)]) -> Self {
-        let range = |code| range_of(ranges, code).unwrap_or(AxisRange { min: 0, max: 0 });
+        use AbsoluteAxisCode as A;
+        use KeyCode as K;
+        let range = |code| {
+            range_of(ranges, code).unwrap_or(AxisRange {
+                min: 0,
+                max: 0,
+                fuzz: 0,
+            })
+        };
         Self {
-            x: Axis::new(range(AbsoluteAxisCode::ABS_X)),
-            y: Axis::new(range(AbsoluteAxisCode::ABS_Y)),
+            x: Stick::new(range(A::ABS_X), (K::KEY_LEFT, K::KEY_RIGHT)),
+            y: Stick::new(range(A::ABS_Y), (K::KEY_UP, K::KEY_DOWN)),
+            pointer: Trackpad::new(range(A::ABS_HAT1X), range(A::ABS_HAT1Y)),
+            scroll: Trackpad::new(range(A::ABS_HAT0X), range(A::ABS_HAT0Y)),
+            swallowed: Vec::new(),
             ranges: ranges.to_vec(),
         }
     }
@@ -146,24 +285,67 @@ impl Pad {
         }
     }
 
-    /// What this event does. `on_home` is whether Home is in front; stick
-    /// state is tracked either way, so a stick held while an app ends doesn't
-    /// step the focus the moment Home appears.
-    pub fn on_event(&mut self, event: InputEvent, on_home: bool) -> Option<PadAction> {
-        let home_key = match event.destructure() {
-            // Presses only: releases and autorepeat (2) do nothing.
-            EventSummary::Key(_, key, 1) => match key {
-                KeyCode::BTN_MODE => return Some(PadAction::GoHome),
-                KeyCode::BTN_DPAD_UP | KeyCode::BTN_DPAD_LEFT => Some(HomeKey::Previous),
-                KeyCode::BTN_DPAD_DOWN | KeyCode::BTN_DPAD_RIGHT => Some(HomeKey::Next),
-                KeyCode::BTN_SOUTH => Some(HomeKey::Launch),
-                _ => None,
+    /// What this event does. `wakes` is whether it just woke the screen, in
+    /// which case it does nothing else, and nor does the release of a press
+    /// or the return of a stick that woke it. Positions are tracked either
+    /// way, so nothing jumps once the screen is back.
+    pub fn on_event(&mut self, event: InputEvent, wakes: bool) -> Vec<PadAction> {
+        use AbsoluteAxisCode as A;
+        match event.destructure() {
+            EventSummary::Key(_, button, 1) if wakes => {
+                self.swallowed.push(button);
+                Vec::new()
+            }
+            EventSummary::Key(_, button, 0) if self.swallowed.contains(&button) => {
+                self.swallowed.retain(|b| *b != button);
+                Vec::new()
+            }
+            EventSummary::Key(_, button, 1) => match binding(button) {
+                Some(Binding::GoHome) => vec![PadAction::GoHome],
+                Some(Binding::Click) => vec![PadAction::Click(ButtonState::Pressed)],
+                Some(Binding::Keys(keys)) => keys
+                    .iter()
+                    .map(|key| PadAction::Key(*key, KeyState::Pressed))
+                    .collect(),
+                None => Vec::new(),
             },
-            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_X, value) => self.x.step(value),
-            EventSummary::AbsoluteAxis(_, AbsoluteAxisCode::ABS_Y, value) => self.y.step(value),
-            _ => None,
-        };
-        home_key.filter(|_| on_home).map(PadAction::Home)
+            EventSummary::Key(_, button, 0) => match binding(button) {
+                Some(Binding::Click) => vec![PadAction::Click(ButtonState::Released)],
+                Some(Binding::Keys(keys)) => keys
+                    .iter()
+                    .rev()
+                    .map(|key| PadAction::Key(*key, KeyState::Released))
+                    .collect(),
+                Some(Binding::GoHome) | None => Vec::new(),
+            },
+            EventSummary::AbsoluteAxis(_, code, value) => {
+                match code {
+                    A::ABS_X => return self.x.on_value(value, wakes).into_iter().collect(),
+                    A::ABS_Y => return self.y.on_value(value, wakes).into_iter().collect(),
+                    A::ABS_HAT1X => self.pointer.now.0 = value,
+                    A::ABS_HAT1Y => self.pointer.now.1 = value,
+                    A::ABS_HAT0X => self.scroll.now.0 = value,
+                    A::ABS_HAT0Y => self.scroll.now.1 = value,
+                    _ => {}
+                }
+                Vec::new()
+            }
+            EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _) => {
+                let pointer = match self.pointer.end_frame() {
+                    Some(Stroke::Moved(by)) => Some(PadAction::Move(by)),
+                    Some(Stroke::Lifted) | None => None,
+                };
+                // Natural scrolling, as on a phone: the page follows the finger.
+                let scroll = match self.scroll.end_frame() {
+                    Some(Stroke::Moved(by)) => Some(PadAction::Scroll(Point::from((-by.x, -by.y)))),
+                    Some(Stroke::Lifted) => Some(PadAction::ScrollStop),
+                    None => None,
+                };
+                pointer.into_iter().chain(scroll).collect()
+            }
+            // Autorepeat (2) included: the client repeats a held key itself.
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -179,6 +361,24 @@ struct Gamepad {
     device: evdev::Device,
     pad: Pad,
     source: RegistrationToken,
+    /// Holds `EVIOCGRAB`: nothing else reading the node sees its events.
+    grabbed: bool,
+}
+
+/// Who reads the controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadReader {
+    /// emrakul grabs it and turns it into keys and a pointer: on Home and in
+    /// web apps.
+    Emrakul,
+    /// The app reads the controller's nodes itself: Moonlight, in a Game.
+    /// emrakul lets go of its grab and only watches for the Steam button and
+    /// for activity.
+    #[expect(
+        dead_code,
+        reason = "Games aren't built yet; a Game's session will read as App"
+    )]
+    App,
 }
 
 impl Emrakul {
@@ -282,8 +482,8 @@ impl Emrakul {
             .get_absinfo()
             .map(|axes| {
                 axes.map(|(code, info)| {
-                    let (min, max) = (info.minimum(), info.maximum());
-                    (code, AxisRange { min, max })
+                    let (min, max, fuzz) = (info.minimum(), info.maximum(), info.fuzz());
+                    (code, AxisRange { min, max, fuzz })
                 })
                 .collect()
             })
@@ -307,7 +507,9 @@ impl Emrakul {
             device,
             pad,
             source,
+            grabbed: false,
         });
+        self.sync_gamepad_grabs();
         // Switching the controller on is the natural "I'm back".
         self.on_activity();
         Ok(())
@@ -347,21 +549,47 @@ impl Emrakul {
         };
         // One at a time: a Launch changes what the next event means.
         for event in events {
-            let on_home = self.home_has_keyboard();
+            let Some(gamepad) = self.gamepads.0.iter().find(|g| g.node == node) else {
+                return;
+            };
+            let wakes = gamepad.pad.is_activity(&event) && self.on_activity() == Activity::Woke;
             let Some(gamepad) = self.gamepads.0.iter_mut().find(|g| g.node == node) else {
                 return;
             };
-            let active = gamepad.pad.is_activity(&event);
-            // Read even when it's about to be swallowed, so a stick push
-            // that wakes the screen doesn't step the focus once it's back.
-            let action = gamepad.pad.on_event(event, on_home);
-            if active && self.on_activity() == Activity::Woke {
-                continue;
+            for action in gamepad.pad.on_event(event, wakes) {
+                tracing::trace!(?action, "controller");
+                match (self.pad_reader(), action) {
+                    (_, PadAction::GoHome) => self.go_home(),
+                    (PadReader::App, _) => {}
+                    (PadReader::Emrakul, PadAction::Key(key, state)) => self.pad_key(key, state),
+                    (PadReader::Emrakul, PadAction::Move(by)) => self.move_pointer(by),
+                    (PadReader::Emrakul, PadAction::Click(state)) => self.click(state),
+                    (PadReader::Emrakul, PadAction::Scroll(by)) => self.scroll(Some(by)),
+                    (PadReader::Emrakul, PadAction::ScrollStop) => self.scroll(None),
+                }
             }
-            match action {
-                Some(PadAction::GoHome) => self.go_home(),
-                Some(PadAction::Home(key)) => self.on_home_key(key),
-                None => {}
+        }
+    }
+
+    /// Grabs every controller while emrakul reads it, so nothing else sees
+    /// the presses twice (Jellyfin has its own Gamepad API code), and lets
+    /// go while the app reads it.
+    pub fn sync_gamepad_grabs(&mut self) {
+        let grab = self.pad_reader() == PadReader::Emrakul;
+        for gamepad in self.gamepads.0.iter_mut().filter(|g| g.grabbed != grab) {
+            let result = if grab {
+                gamepad.device.grab()
+            } else {
+                gamepad.device.ungrab()
+            };
+            match result {
+                Ok(()) => {
+                    gamepad.grabbed = grab;
+                    tracing::debug!(grab, node = %gamepad.node.display(), "controller grab");
+                }
+                Err(err) => {
+                    tracing::warn!(?err, grab, node = %gamepad.node.display(), "grabbing controller")
+                }
             }
         }
     }
@@ -370,18 +598,40 @@ impl Emrakul {
 #[cfg(test)]
 mod tests {
     use evdev::EventType;
+    use smithay::backend::input::{ButtonState, KeyState};
 
     use super::*;
 
+    // As the captures in docs/hardware report them.
     const STEAM_STICK: AxisRange = AxisRange {
         min: -32767,
         max: 32767,
+        fuzz: 0,
+    };
+    const STEAM_TRACKPAD: AxisRange = AxisRange {
+        min: -32767,
+        max: 32767,
+        fuzz: 256,
+    };
+    const TRIGGER: AxisRange = AxisRange {
+        min: 0,
+        max: 32767,
+        fuzz: 0,
     };
 
-    fn pad() -> Pad {
+    fn steam_controller() -> Pad {
+        use AbsoluteAxisCode as A;
         Pad::new(&[
-            (AbsoluteAxisCode::ABS_X, STEAM_STICK),
-            (AbsoluteAxisCode::ABS_Y, STEAM_STICK),
+            (A::ABS_X, STEAM_STICK),
+            (A::ABS_Y, STEAM_STICK),
+            (A::ABS_RX, STEAM_STICK),
+            (A::ABS_RY, STEAM_STICK),
+            (A::ABS_HAT0X, STEAM_TRACKPAD),
+            (A::ABS_HAT0Y, STEAM_TRACKPAD),
+            (A::ABS_HAT1X, STEAM_TRACKPAD),
+            (A::ABS_HAT1Y, STEAM_TRACKPAD),
+            (A::ABS_HAT2X, TRIGGER),
+            (A::ABS_HAT2Y, TRIGGER),
         ])
     }
 
@@ -393,137 +643,294 @@ mod tests {
         InputEvent::new(EventType::ABSOLUTE.0, code.0, value)
     }
 
+    fn syn() -> InputEvent {
+        InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0)
+    }
+
+    /// Every action a run of events makes, none of them waking the screen.
+    fn feed(pad: &mut Pad, events: impl IntoIterator<Item = InputEvent>) -> Vec<PadAction> {
+        events
+            .into_iter()
+            .flat_map(|event| pad.on_event(event, false))
+            .collect()
+    }
+
+    fn tap(code: KeyCode) -> [InputEvent; 4] {
+        [key(code, 1), syn(), key(code, 0), syn()]
+    }
+
+    fn down(code: KeyCode) -> PadAction {
+        PadAction::Key(code, KeyState::Pressed)
+    }
+
+    fn up(code: KeyCode) -> PadAction {
+        PadAction::Key(code, KeyState::Released)
+    }
+
+    /// One trackpad frame: both axes, then the report that ends it.
+    fn touch(x: AbsoluteAxisCode, y: AbsoluteAxisCode, at: (i32, i32)) -> [InputEvent; 3] {
+        [abs(x, at.0), abs(y, at.1), syn()]
+    }
+
+    fn right_pad(at: (i32, i32)) -> [InputEvent; 3] {
+        touch(AbsoluteAxisCode::ABS_HAT1X, AbsoluteAxisCode::ABS_HAT1Y, at)
+    }
+
+    fn left_pad(at: (i32, i32)) -> [InputEvent; 3] {
+        touch(AbsoluteAxisCode::ABS_HAT0X, AbsoluteAxisCode::ABS_HAT0Y, at)
+    }
+
     #[test]
-    fn steam_button_goes_home_from_anywhere() {
+    fn steam_button_goes_home() {
         assert_eq!(
-            pad().on_event(key(KeyCode::BTN_MODE, 1), false),
-            Some(PadAction::GoHome)
-        );
-        assert_eq!(
-            pad().on_event(key(KeyCode::BTN_MODE, 1), true),
-            Some(PadAction::GoHome)
+            feed(&mut steam_controller(), tap(KeyCode::BTN_MODE)),
+            [PadAction::GoHome]
         );
     }
 
     #[test]
-    fn releases_and_repeats_do_nothing() {
-        let mut pad = pad();
-        assert_eq!(pad.on_event(key(KeyCode::BTN_MODE, 0), false), None);
-        assert_eq!(pad.on_event(key(KeyCode::BTN_SOUTH, 0), true), None);
-        assert_eq!(pad.on_event(key(KeyCode::BTN_DPAD_DOWN, 2), true), None);
-    }
-
-    #[test]
-    fn dpad_and_a_drive_home() {
-        let mut pad = pad();
-        for (code, home_key) in [
-            (KeyCode::BTN_DPAD_UP, HomeKey::Previous),
-            (KeyCode::BTN_DPAD_LEFT, HomeKey::Previous),
-            (KeyCode::BTN_DPAD_DOWN, HomeKey::Next),
-            (KeyCode::BTN_DPAD_RIGHT, HomeKey::Next),
-            (KeyCode::BTN_SOUTH, HomeKey::Launch),
+    fn buttons_press_and_release_the_web_app_keys() {
+        for (button, key) in [
+            (KeyCode::BTN_DPAD_UP, KeyCode::KEY_UP),
+            (KeyCode::BTN_DPAD_DOWN, KeyCode::KEY_DOWN),
+            (KeyCode::BTN_DPAD_LEFT, KeyCode::KEY_LEFT),
+            (KeyCode::BTN_DPAD_RIGHT, KeyCode::KEY_RIGHT),
+            (KeyCode::BTN_SOUTH, KeyCode::KEY_ENTER),
+            (KeyCode::BTN_NORTH, KeyCode::KEY_K),
+            (KeyCode::BTN_WEST, KeyCode::KEY_F),
+            (KeyCode::BTN_TL, KeyCode::KEY_J),
+            (KeyCode::BTN_TR, KeyCode::KEY_L),
+            (KeyCode::BTN_SELECT, KeyCode::KEY_ESC),
         ] {
             assert_eq!(
-                pad.on_event(key(code, 1), true),
-                Some(PadAction::Home(home_key))
+                feed(&mut steam_controller(), tap(button)),
+                [down(key), up(key)],
+                "{button:?}"
             );
         }
     }
 
     #[test]
-    fn home_navigation_does_nothing_over_an_app() {
-        let mut pad = pad();
-        assert_eq!(pad.on_event(key(KeyCode::BTN_SOUTH, 1), false), None);
-        assert_eq!(pad.on_event(key(KeyCode::BTN_DPAD_DOWN, 1), false), None);
+    fn b_is_alt_left_released_in_reverse() {
         assert_eq!(
-            pad.on_event(abs(AbsoluteAxisCode::ABS_X, 30000), false),
-            None
+            feed(&mut steam_controller(), tap(KeyCode::BTN_EAST)),
+            [
+                down(KeyCode::KEY_LEFTALT),
+                down(KeyCode::KEY_LEFT),
+                up(KeyCode::KEY_LEFT),
+                up(KeyCode::KEY_LEFTALT),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_held_button_holds_its_key_until_released() {
+        let mut pad = steam_controller();
+        assert_eq!(
+            feed(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 1), syn()]),
+            [down(KeyCode::KEY_DOWN)]
+        );
+        // Kernel autorepeat, if any: the client repeats the held key itself.
+        assert_eq!(feed(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 2), syn()]), []);
+        assert_eq!(
+            feed(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 0), syn()]),
+            [up(KeyCode::KEY_DOWN)]
+        );
+    }
+
+    #[test]
+    fn unmapped_controls_do_nothing() {
+        let mut pad = steam_controller();
+        for button in [
+            KeyCode::BTN_START, // the on-screen keyboard's, later
+            KeyCode::BTN_TL2,
+            KeyCode::BTN_TR2,
+            KeyCode::BTN_THUMBL,
+            KeyCode::BTN_THUMBR,
+            KeyCode::BTN_THUMB,
+            KeyCode::BTN_BASE,
+            KeyCode(548),
+        ] {
+            assert_eq!(feed(&mut pad, tap(button)), [], "{button:?}");
+        }
+        assert_eq!(
+            feed(
+                &mut pad,
+                [
+                    abs(AbsoluteAxisCode::ABS_RX, 30000),
+                    abs(AbsoluteAxisCode::ABS_HAT2X, 30000),
+                    syn()
+                ]
+            ),
+            []
+        );
+    }
+
+    #[test]
+    fn a_press_that_wakes_the_screen_is_swallowed_with_its_release() {
+        let mut pad = steam_controller();
+        assert_eq!(pad.on_event(key(KeyCode::BTN_EAST, 1), true), []);
+        assert_eq!(
+            feed(&mut pad, [syn(), key(KeyCode::BTN_EAST, 0), syn()]),
+            []
+        );
+        assert_eq!(pad.on_event(key(KeyCode::BTN_MODE, 1), true), []);
+        assert_eq!(feed(&mut pad, [key(KeyCode::BTN_MODE, 0)]), []);
+        // The next press is an ordinary one.
+        assert_eq!(
+            feed(&mut pad, tap(KeyCode::BTN_EAST)).len(),
+            4,
+            "Alt+Left, pressed and released"
         );
     }
 
     #[test]
     fn stick_jitter_at_rest_is_ignored() {
-        let mut pad = pad();
+        let mut pad = steam_controller();
         for value in [-500, 480, 0, -320, 500] {
             assert_eq!(
-                pad.on_event(abs(AbsoluteAxisCode::ABS_X, value), true),
-                None
-            );
-            assert_eq!(
-                pad.on_event(abs(AbsoluteAxisCode::ABS_Y, value), true),
-                None
+                feed(
+                    &mut pad,
+                    [
+                        abs(AbsoluteAxisCode::ABS_X, value),
+                        abs(AbsoluteAxisCode::ABS_Y, value),
+                        syn()
+                    ]
+                ),
+                []
             );
         }
     }
 
     #[test]
-    fn a_held_stick_steps_once_until_it_recentres() {
-        let mut pad = pad();
+    fn a_pushed_stick_holds_an_arrow_until_it_recentres() {
+        let mut pad = steam_controller();
         let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
-        assert_eq!(
-            pad.on_event(x(20000), true),
-            Some(PadAction::Home(HomeKey::Next))
-        );
-        assert_eq!(pad.on_event(x(32767), true), None);
-        // Easing off a little, still past the recentre line: no new step.
-        assert_eq!(pad.on_event(x(12000), true), None);
-        assert_eq!(pad.on_event(x(20000), true), None);
-        assert_eq!(pad.on_event(x(400), true), None);
-        assert_eq!(
-            pad.on_event(x(-20000), true),
-            Some(PadAction::Home(HomeKey::Previous))
-        );
+        assert_eq!(feed(&mut pad, [x(20000)]), [down(KeyCode::KEY_RIGHT)]);
+        assert_eq!(feed(&mut pad, [x(32767)]), []);
+        // Easing off a little, still past the recentre line: still held.
+        assert_eq!(feed(&mut pad, [x(12000), x(20000)]), []);
+        assert_eq!(feed(&mut pad, [x(400)]), [up(KeyCode::KEY_RIGHT)]);
+        assert_eq!(feed(&mut pad, [x(-20000)]), [down(KeyCode::KEY_LEFT)]);
     }
 
     #[test]
-    fn stick_up_is_previous_and_down_is_next() {
-        let mut pad = pad();
+    fn stick_up_is_the_up_arrow_and_down_is_down() {
+        let mut pad = steam_controller();
         let y = |v| abs(AbsoluteAxisCode::ABS_Y, v);
         assert_eq!(
-            pad.on_event(y(-30000), true),
-            Some(PadAction::Home(HomeKey::Previous))
-        );
-        pad.on_event(y(0), true);
-        assert_eq!(
-            pad.on_event(y(30000), true),
-            Some(PadAction::Home(HomeKey::Next))
+            feed(&mut pad, [y(-30000), y(0), y(30000)]),
+            [
+                down(KeyCode::KEY_UP),
+                up(KeyCode::KEY_UP),
+                down(KeyCode::KEY_DOWN)
+            ]
         );
     }
 
     #[test]
-    fn a_stick_pushed_over_an_app_does_not_step_when_home_appears() {
-        let mut pad = pad();
+    fn a_stick_push_that_wakes_the_screen_presses_nothing() {
+        let mut pad = steam_controller();
         let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
-        assert_eq!(pad.on_event(x(30000), false), None);
-        assert_eq!(pad.on_event(x(31000), true), None);
+        assert_eq!(pad.on_event(x(30000), true), []);
+        assert_eq!(feed(&mut pad, [x(31000), x(0)]), []);
+        assert_eq!(feed(&mut pad, [x(30000)]), [down(KeyCode::KEY_RIGHT)]);
     }
 
     #[test]
     fn unsigned_ranges_centre_on_their_midpoint() {
-        let mut pad = Pad::new(&[(AbsoluteAxisCode::ABS_X, AxisRange { min: 0, max: 255 })]);
+        let mut pad = Pad::new(&[(
+            AbsoluteAxisCode::ABS_X,
+            AxisRange {
+                min: 0,
+                max: 255,
+                fuzz: 0,
+            },
+        )]);
         let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
-        assert_eq!(pad.on_event(x(128), true), None);
+        assert_eq!(feed(&mut pad, [x(128)]), []);
+        assert_eq!(feed(&mut pad, [x(250)]), [down(KeyCode::KEY_RIGHT)]);
+    }
+
+    #[test]
+    fn the_right_trackpad_moves_the_pointer_by_the_fingers_travel() {
+        let mut pad = steam_controller();
+        // Touching down only says where the finger is.
+        assert_eq!(feed(&mut pad, right_pad((-3000, 1000))), []);
+        // Half the pad's width is half the screen's (1920 px).
+        let moved = feed(&mut pad, right_pad((-3000 + 32767, 1000 - 16383)));
+        let [PadAction::Move(by)] = moved[..] else {
+            panic!("{moved:?}");
+        };
+        assert!((by.x - 1920.0).abs() < 1.0, "{by:?}");
+        assert!((by.y + 960.0).abs() < 1.0, "{by:?}");
+    }
+
+    #[test]
+    fn lifting_off_the_trackpad_does_not_jump_the_pointer() {
+        let mut pad = steam_controller();
+        feed(&mut pad, right_pad((10000, 10000)));
+        // hid-steam reports a lift as the pad going to (0, 0).
+        assert_eq!(feed(&mut pad, right_pad((0, 0))), []);
+        // Nor does the next touch, wherever it lands.
+        assert_eq!(feed(&mut pad, right_pad((-20000, -20000))), []);
+        let moved = feed(&mut pad, [abs(AbsoluteAxisCode::ABS_HAT1Y, -19000), syn()]);
+        assert!(matches!(moved[..], [PadAction::Move(_)]), "{moved:?}");
+    }
+
+    #[test]
+    fn a_lift_the_kernel_smooths_short_of_zero_still_lifts() {
+        let mut pad = steam_controller();
+        feed(&mut pad, right_pad((300, 6000)));
+        // The kernel's fuzz filter only lets a change near the last value
+        // through part way: lifting from x = 300 reports x = 150, then
+        // stops at about 112, never 0. y jumps straight to 0.
+        assert_eq!(feed(&mut pad, right_pad((150, 0))), []);
+        assert_eq!(feed(&mut pad, right_pad((112, 0))), []);
+        // So the next touch, far away, must not be read as a swipe there.
+        assert_eq!(feed(&mut pad, right_pad((-20000, 15000))), []);
+    }
+
+    #[test]
+    fn a_frame_with_only_one_axis_moving_moves_along_it() {
+        let mut pad = steam_controller();
+        feed(&mut pad, right_pad((5000, 5000)));
+        let moved = feed(&mut pad, [abs(AbsoluteAxisCode::ABS_HAT1X, 7000), syn()]);
+        let [PadAction::Move(by)] = moved[..] else {
+            panic!("{moved:?}");
+        };
+        assert!(by.x > 0.0 && by.y == 0.0, "{by:?}");
+    }
+
+    #[test]
+    fn the_right_trackpad_click_is_the_left_button() {
         assert_eq!(
-            pad.on_event(x(250), true),
-            Some(PadAction::Home(HomeKey::Next))
+            feed(&mut steam_controller(), tap(KeyCode::BTN_THUMB2)),
+            [
+                PadAction::Click(ButtonState::Pressed),
+                PadAction::Click(ButtonState::Released)
+            ]
         );
     }
-    const TRIGGER: AxisRange = AxisRange { min: 0, max: 32767 };
 
-    fn steam_controller() -> Pad {
-        use AbsoluteAxisCode as A;
-        Pad::new(&[
-            (A::ABS_X, STEAM_STICK),
-            (A::ABS_Y, STEAM_STICK),
-            (A::ABS_RX, STEAM_STICK),
-            (A::ABS_RY, STEAM_STICK),
-            (A::ABS_HAT0X, STEAM_STICK),
-            (A::ABS_HAT0Y, STEAM_STICK),
-            (A::ABS_HAT1X, STEAM_STICK),
-            (A::ABS_HAT1Y, STEAM_STICK),
-            (A::ABS_HAT2X, TRIGGER),
-            (A::ABS_HAT2Y, TRIGGER),
-        ])
+    #[test]
+    fn the_left_trackpad_scrolls_with_the_finger_then_stops_on_lift() {
+        let mut pad = steam_controller();
+        assert_eq!(feed(&mut pad, left_pad((0, 10000))), []);
+        // Finger up the pad: the page follows it up, so it scrolls down.
+        let scrolled = feed(&mut pad, left_pad((0, 10000 - 3277)));
+        let [PadAction::Scroll(by)] = scrolled[..] else {
+            panic!("{scrolled:?}");
+        };
+        assert!(by.y > 0.0 && by.x == 0.0, "{by:?}");
+        assert_eq!(feed(&mut pad, left_pad((0, 0))), [PadAction::ScrollStop]);
+    }
+
+    #[test]
+    fn a_touch_on_one_trackpad_does_not_drive_the_other() {
+        let mut pad = steam_controller();
+        feed(&mut pad, right_pad((5000, 5000)));
+        assert_eq!(feed(&mut pad, left_pad((9000, 9000))), []);
     }
 
     #[test]
@@ -577,7 +984,7 @@ mod tests {
     #[test]
     fn sync_and_unknown_axes_are_not_activity() {
         let pad = steam_controller();
-        assert!(!pad.is_activity(&InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0)));
+        assert!(!pad.is_activity(&syn()));
         assert!(!pad.is_activity(&abs(AbsoluteAxisCode::ABS_PRESSURE, 9000)));
     }
 }

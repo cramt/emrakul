@@ -79,7 +79,7 @@ type Feedback = Option<OutputPresentationFeedback>;
 smithay::render_elements! {
     pub Element<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Home=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 pub struct Backend {
@@ -519,6 +519,8 @@ impl Emrakul {
             idle,
             session,
             home_view,
+            seat,
+            cursor,
             ..
         } = self;
         // Queueing a frame would switch the screen back on. Clients get no
@@ -580,6 +582,14 @@ impl Emrakul {
             }
             _ => None,
         };
+        // Only once the pointer is on a client: it is hidden on Home, and
+        // until the trackpad is first touched in an app.
+        if let Some(pointer) = seat.get_pointer()
+            && pointer.current_focus().is_some()
+        {
+            let cursor = cursor.elements(&mut backend.renderer, pointer.current_location());
+            elements.splice(0..0, cursor);
+        }
         if let Some(home) = home {
             elements.extend(
                 home_view

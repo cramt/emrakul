@@ -18,6 +18,7 @@ use smithay::reexports::calloop::{
 
 use crate::{
     apps::{self, App, AppId, Argv, Quit},
+    gamepad::PadReader,
     state::Emrakul,
 };
 
@@ -87,6 +88,13 @@ impl Emrakul {
     /// Whether keys belong to Home rather than a client.
     pub fn home_has_keyboard(&self) -> bool {
         self.home().is_some() && self.space.elements().next().is_none()
+    }
+
+    /// Who reads the controller right now. Every app is a web app until
+    /// Game entries exist; a running Game is where this returns
+    /// [`PadReader::App`], and [`Self::restack`] applies the change.
+    pub fn pad_reader(&self) -> PadReader {
+        PadReader::Emrakul
     }
 
     pub fn on_home_key(&mut self, key: HomeKey) {

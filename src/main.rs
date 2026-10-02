@@ -1,5 +1,6 @@
 mod apps;
 mod config;
+mod cursor;
 mod drm;
 mod gamepad;
 mod home;

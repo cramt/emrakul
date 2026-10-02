@@ -2,14 +2,18 @@ use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::on_commit_buffer_handler},
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
-    delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
+    delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
+    delegate_output, delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
     delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{
-        PopupKeyboardGrab, PopupKind, PopupManager, PopupUngrabStrategy, Space, Window,
-        find_popup_root_surface, get_popup_toplevel_coords,
+        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space,
+        Window, find_popup_root_surface, get_popup_toplevel_coords,
     },
-    input::{Seat, SeatHandler, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
+    input::{
+        Seat, SeatHandler, SeatState,
+        keyboard::XkbConfig,
+        pointer::{CursorImageStatus, Focus, MotionEvent},
+    },
     reexports::{
         calloop::{
             Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken,
@@ -29,6 +33,7 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
+        cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         idle_inhibit::IdleInhibitManagerState,
         output::{OutputHandler, OutputManagerState},
@@ -44,12 +49,14 @@ use smithay::{
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
+        tablet_manager::TabletSeatHandler,
         viewporter::ViewporterState,
     },
 };
 
 use crate::{
     config::Config,
+    cursor::Cursor,
     drm::Backend,
     gamepad::Gamepads,
     home,
@@ -85,6 +92,7 @@ pub struct Emrakul {
     /// the client would see half a keypress.
     pub waking_key: Option<smithay::input::keyboard::Keycode>,
     pub home_view: home::View,
+    pub cursor: Cursor,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -114,6 +122,7 @@ impl Emrakul {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, backend.seat_name());
         seat.add_keyboard(XkbConfig::default(), 400, 30)?;
+        seat.add_pointer();
 
         let socket_name = Self::listen(display, &loop_handle)?;
 
@@ -131,6 +140,7 @@ impl Emrakul {
             idle_timer: None,
             waking_key: None,
             home_view: home::View::new()?,
+            cursor: Cursor::new(),
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
@@ -143,6 +153,7 @@ impl Emrakul {
                 _presentation: PresentationState::new::<Self>(&dh, clock.id() as u32),
                 _viewporter: ViewporterState::new::<Self>(&dh),
                 _idle_inhibit: IdleInhibitManagerState::new::<Self>(&dh),
+                _cursor_shape: CursorShapeManagerState::new::<Self>(&dh),
             },
             data_device_state: DataDeviceState::new::<Self>(&dh),
             seat_state,
@@ -217,6 +228,19 @@ impl Emrakul {
             keyboard.unset_grab(self);
             keyboard.set_focus(self, focus, serial);
         }
+        // The cursor hides with the app it was on, and comes back in the
+        // middle of the screen the next time the trackpad is touched.
+        if let (Some(pointer), Some(size)) = (self.seat.get_pointer(), self.backend.output_size()) {
+            pointer.unset_grab(self, serial, self.clock.now().as_millis());
+            let event = MotionEvent {
+                location: size.to_f64().to_point().downscale(2.0),
+                serial,
+                time: self.clock.now().as_millis(),
+            };
+            pointer.motion(self, None, &event);
+            pointer.frame(self);
+        }
+        self.sync_gamepad_grabs();
         self.backend.request_redraw(&self.loop_handle);
     }
 
@@ -248,6 +272,10 @@ pub struct Globals {
     _presentation: PresentationState,
     _viewporter: ViewporterState,
     _idle_inhibit: IdleInhibitManagerState,
+    /// Lets clients ask for a cursor by name, which emrakul draws at a size
+    /// for the TV. Chromium otherwise attaches its own, 24 px whatever
+    /// XCURSOR_SIZE says, which is lost on a 4K screen across a room.
+    _cursor_shape: CursorShapeManagerState,
 }
 
 #[derive(Default)]
@@ -429,6 +457,10 @@ impl XdgShellHandler for Emrakul {
         tracing::debug!("popup grabbed the keyboard");
         keyboard.set_focus(self, grab.current_grab(), serial);
         keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        // And the pointer, so a click outside the menu dismisses it.
+        if let Some(pointer) = seat.get_pointer() {
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
     }
 }
 
@@ -459,7 +491,10 @@ impl SeatHandler for Emrakul {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor.status = image;
+        self.backend.request_redraw(&self.loop_handle);
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
@@ -486,6 +521,9 @@ impl WaylandDndGrabHandler for Emrakul {}
 
 impl OutputHandler for Emrakul {}
 
+// Only so cursor-shape can be offered: there are no tablets.
+impl TabletSeatHandler for Emrakul {}
+
 delegate_compositor!(Emrakul);
 delegate_shm!(Emrakul);
 delegate_dmabuf!(Emrakul);
@@ -496,6 +534,7 @@ delegate_data_device!(Emrakul);
 delegate_output!(Emrakul);
 delegate_presentation!(Emrakul);
 delegate_viewporter!(Emrakul);
+delegate_cursor_shape!(Emrakul);
 
 fn toplevel_app_id(toplevel: &ToplevelSurface) -> Option<String> {
     with_states(toplevel.wl_surface(), |states| {

@@ -42,19 +42,41 @@ What it does today:
 - Shows exactly one toplevel, fullscreen and with no decorations. The newest
   one wins, and closing it brings back the one before.
 - Speaks enough Wayland for real clients: shm, dmabuf with per-surface scanout
-  feedback, presentation-time, viewporter, xdg-output, and xdg popups, so a
-  web app's `<select>` dropdowns and context menus show above it, kept on the
-  screen. They close when their app leaves the screen.
+  feedback, presentation-time, viewporter, xdg-output, cursor-shape, and xdg
+  popups, so a web app's `<select>` dropdowns and context menus show above
+  it, kept on the screen. They close when their app leaves the screen or on
+  a click outside them.
 - Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
   Ctrl+Alt+H (go Home, the keyboard's Steam button). Every other key goes
   to the foreground client, except on Home itself, where arrows move the focus
   and Enter launches.
 - Reads gamepads (the Steam Controller through the kernel's `hid-steam`
   driver, Linux 7.3+) straight from their evdev nodes, following udev as they
-  come and go with the wireless link. The Steam button (`BTN_MODE`) goes Home
-  from anywhere. On Home, a stand-in mapping until the full controller table
-  is decided: D-pad, or the left stick pushed past half way, moves the focus,
-  and A launches. Over an app, only the Steam button does anything so far.
+  come and go with the wireless link, and grabs them (`EVIOCGRAB`) so no
+  client reads them too: Jellyfin's own Gamepad API code would otherwise see
+  every press twice. Games will release the grab for Moonlight once they
+  exist. The Steam button (`BTN_MODE`) goes Home from anywhere. Everything
+  else becomes keys on the seat keyboard and a pointer, one map for every
+  web app:
+
+  | Control | Becomes |
+  | --- | --- |
+  | D-pad, left stick past half way | arrows, repeating while held |
+  | A | Enter |
+  | B | Alt+Left (back) |
+  | X / Y | k / f |
+  | LB / RB | j / l |
+  | View | Escape |
+  | Right trackpad, its click | pointer, left button |
+  | Left trackpad | scroll, touchpad-style (the page follows the finger) |
+  | Menu, triggers, stick clicks, right stick, grips, Quick access | nothing yet |
+
+  Home reads the same arrows and Enter: they move the focus and launch. The
+  cursor is emrakul's own arrow, drawn at TV size; Chromium asks for it by
+  name over `wp_cursor_shape_v1` and hides it over a playing video. It
+  appears in the middle of the screen at the first touch of the right
+  trackpad and hides again when the app changes. A swipe across the whole
+  trackpad moves the pointer the width of the screen.
 - Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
   minutes unless configured. The TV shows No Signal and may power itself
   down. Activity is a controller button, a stick past a quarter of its

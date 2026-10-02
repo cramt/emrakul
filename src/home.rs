@@ -204,7 +204,7 @@ impl View {
     }
 }
 
-fn buffer(pixmap: &Pixmap, opaque: bool) -> MemoryRenderBuffer {
+pub fn buffer(pixmap: &Pixmap, opaque: bool) -> MemoryRenderBuffer {
     let size = (pixmap.width() as i32, pixmap.height() as i32);
     // tiny-skia's premultiplied RGBA bytes are exactly ABGR8888 in DRM's
     // little-endian naming.

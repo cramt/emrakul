@@ -1,13 +1,24 @@
+//! Keys and the pointer, from a keyboard or a controller, to Home or the
+//! foreground client.
+
 use smithay::{
     backend::{
-        input::{Event, InputEvent, KeyState, KeyboardKeyEvent},
+        input::{Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent},
         libinput::LibinputInputBackend,
     },
-    input::keyboard::{FilterResult, Keysym, ModifiersState},
-    utils::SERIAL_COUNTER,
+    desktop::WindowSurfaceType,
+    input::{
+        keyboard::{FilterResult, Keycode, Keysym, ModifiersState},
+        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+    },
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Point, SERIAL_COUNTER},
 };
 
 use crate::{idle::Activity, lifecycle::HomeKey, state::Emrakul};
+
+/// `BTN_LEFT`, which wl_pointer speaks in.
+const LEFT_BUTTON: u32 = 0x110;
 
 /// Keys the compositor keeps for itself. Everything else goes to the
 /// foreground client.
@@ -53,18 +64,36 @@ impl Emrakul {
         let InputEvent::Keyboard { event } = event else {
             return;
         };
+        let woke = event.state() == KeyState::Pressed && self.on_activity() == Activity::Woke;
+        self.key(
+            event.key_code(),
+            event.state(),
+            Event::time_msec(&event),
+            woke,
+        );
+    }
+
+    /// A controller's key. It has already been through Idle: a press that
+    /// woke the screen never gets here.
+    pub fn pad_key(&mut self, key: evdev::KeyCode, state: KeyState) {
+        // xkb keycodes are evdev's plus 8.
+        let code = Keycode::new(u32::from(key.0) + 8);
+        self.key(code, state, self.clock.now().as_millis(), false);
+    }
+
+    /// A key on the seat keyboard. `woke` is whether its press just woke the
+    /// screen, in which case it and its release do nothing.
+    fn key(&mut self, code: Keycode, key_state: KeyState, time: u32, woke: bool) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let pressed = event.state() == KeyState::Pressed;
-        let code = event.key_code();
-        let woke = pressed && self.on_activity() == Activity::Woke;
+        let pressed = key_state == KeyState::Pressed;
         let action = keyboard.input(
             self,
             code,
-            event.state(),
+            key_state,
             SERIAL_COUNTER.next_serial(),
-            Event::time_msec(&event),
+            time,
             |state, modifiers, handle| {
                 if woke {
                     state.waking_key = Some(code);
@@ -89,6 +118,66 @@ impl Emrakul {
             Some(Reserved::Home(key)) => self.on_home_key(key),
             None => {}
         }
+    }
+
+    /// Moves the pointer, kept on the screen, to whatever surface is under it.
+    pub fn move_pointer(&mut self, by: Point<f64, Logical>) {
+        let (Some(pointer), Some(size)) = (self.seat.get_pointer(), self.backend.output_size())
+        else {
+            return;
+        };
+        let to = pointer.current_location() + by;
+        let to = Point::from((
+            to.x.clamp(0.0, f64::from(size.w - 1)),
+            to.y.clamp(0.0, f64::from(size.h - 1)),
+        ));
+        let event = MotionEvent {
+            location: to,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.clock.now().as_millis(),
+        };
+        pointer.motion(self, self.surface_under(to), &event);
+        pointer.frame(self);
+        self.backend.request_redraw(&self.loop_handle);
+    }
+
+    fn surface_under(&self, at: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let (window, location) = self.space.element_under(at)?;
+        let (surface, offset) =
+            window.surface_under(at - location.to_f64(), WindowSurfaceType::ALL)?;
+        Some((surface, (location + offset).to_f64()))
+    }
+
+    pub fn click(&mut self, state: ButtonState) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let event = ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: self.clock.now().as_millis(),
+            button: LEFT_BUTTON,
+            state,
+        };
+        pointer.button(self, &event);
+        pointer.frame(self);
+    }
+
+    /// Scrolls by `by`, or with `None`, ends the scroll as the finger lifts.
+    /// It is a touchpad-style scroll (`finger`), so the client scrolls
+    /// smoothly and may coast once it ends.
+    pub fn scroll(&mut self, by: Option<Point<f64, Logical>>) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let frame = AxisFrame::new(self.clock.now().as_millis()).source(AxisSource::Finger);
+        let frame = match by {
+            Some(by) => frame
+                .value(Axis::Horizontal, by.x)
+                .value(Axis::Vertical, by.y),
+            None => frame.stop(Axis::Horizontal).stop(Axis::Vertical),
+        };
+        pointer.axis(self, frame);
+        pointer.frame(self);
     }
 }
 
