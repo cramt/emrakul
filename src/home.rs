@@ -42,10 +42,10 @@ use crate::{
 
 /// Picked in flake.nix and baked in as a store path, so the binary carries
 /// its font and Home looks the same whatever fonts the machine has.
-const FONT: &str = env!("EMRAKUL_FONT");
+pub const FONT: &str = env!("EMRAKUL_FONT");
 
-const SCREEN_W: i32 = 3840;
-const SCREEN_H: i32 = 2160;
+pub const SCREEN_W: i32 = 3840;
+pub const SCREEN_H: i32 = 2160;
 const ROW_LEFT: i32 = 192;
 const ROW_BOTTOM: i32 = 1920;
 const TILE: i32 = 440;
@@ -54,7 +54,7 @@ const GAP: i32 = 56;
 /// How many tiles stay left of the focus before the row scrolls, so the
 /// next few apps always peek in from the right.
 const LEFT_OF_FOCUS: usize = 4;
-const RADIUS: f32 = 36.0;
+pub const RADIUS: f32 = 36.0;
 /// The focus ring: this wide, this far outside the focused tile.
 const RING_WIDTH: i32 = 12;
 const RING_GAP: i32 = 12;
@@ -68,12 +68,12 @@ const LETTER_SIZE: f32 = 128.0;
 /// and stretched: an eighth of the upload, and no visible difference.
 const BACKDROP_SIZE: (i32, i32) = (SCREEN_W / 8, SCREEN_H / 8);
 
-const BACKGROUND: Rgb = Rgb([0x0d, 0x0f, 0x14]);
+pub const BACKGROUND: Rgb = Rgb([0x0d, 0x0f, 0x14]);
 const GLOW: Rgb = Rgb([0x2a, 0x35, 0x50]);
-const TILE_COLOUR: Rgb = Rgb([0x1c, 0x20, 0x29]);
+pub const TILE_COLOUR: Rgb = Rgb([0x1c, 0x20, 0x29]);
 const LETTER_COLOUR: Rgb = Rgb([0x8a, 0x93, 0xa8]);
-const TITLE_COLOUR: Rgb = Rgb([0xe8, 0xea, 0xf0]);
-const RING_COLOUR: Rgb = Rgb([0xff, 0xff, 0xff]);
+pub const TITLE_COLOUR: Rgb = Rgb([0xe8, 0xea, 0xf0]);
+pub const RING_COLOUR: Rgb = Rgb([0xff, 0xff, 0xff]);
 
 /// One tile on screen: which app, and its left edge. Tiles sit on a common
 /// bottom line, so the focused one grows upwards.
@@ -273,7 +273,7 @@ fn tile(
     let mut pixmap = Pixmap::new(side as u32, side as u32).expect("a non-empty size");
     let size = side - 2 * inset;
     pixmap.fill_path(
-        &rounded_rect(inset as f32, inset as f32, size as f32, RADIUS),
+        &rounded_rect(inset as f32, inset as f32, size as f32, size as f32, RADIUS),
         &solid(app.brand.unwrap_or(TILE_COLOUR)),
         FillRule::Winding,
         tiny_skia::Transform::identity(),
@@ -285,6 +285,7 @@ fn tile(
             &rounded_rect(
                 half,
                 half,
+                side as f32 - 2.0 * half,
                 side as f32 - 2.0 * half,
                 RADIUS + RING_OUT as f32 - half,
             ),
@@ -390,7 +391,7 @@ fn icon(file: &IconFile, side: f32) -> anyhow::Result<Pixmap> {
 
 /// One line of text, cut off at `max_width`, in a pixmap just big enough
 /// for it.
-fn text(
+pub fn text(
     fonts: &mut FontSystem,
     swash: &mut SwashCache,
     text: &str,
@@ -453,11 +454,11 @@ fn blend(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, colour: Color) {
     }
 }
 
-fn rounded_rect(x: f32, y: f32, side: f32, radius: f32) -> Path {
+pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Path {
     // How far along a corner's tangents a cubic's control points sit to
     // approximate a quarter circle.
     let k = radius * 0.552_284_8;
-    let (right, bottom) = (x + side, y + side);
+    let (right, bottom) = (x + w, y + h);
     let mut path = PathBuilder::new();
     path.move_to(x + radius, y);
     path.line_to(right - radius, y);
@@ -497,7 +498,7 @@ fn colour(Rgb([r, g, b]): Rgb) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(r, g, b, 255)
 }
 
-fn solid(rgb: Rgb) -> Paint<'static> {
+pub fn solid(rgb: Rgb) -> Paint<'static> {
     Paint {
         shader: Shader::SolidColor(colour(rgb)),
         anti_alias: true,

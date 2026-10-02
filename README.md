@@ -69,7 +69,8 @@ What it does today:
   | View | Escape |
   | Right trackpad, its click | pointer, left button |
   | Left trackpad | scroll, touchpad-style (the page follows the finger) |
-  | Menu, triggers, stick clicks, right stick, grips, Quick access | nothing yet |
+  | Menu | the on-screen keyboard, in an app |
+  | Triggers, stick clicks, right stick, grips, Quick access | nothing yet |
 
   Home reads the same arrows and Enter: they move the focus and launch. The
   cursor is emrakul's own arrow, drawn at TV size; Chromium asks for it by
@@ -77,6 +78,16 @@ What it does today:
   appears in the middle of the screen at the first touch of the right
   trackpad and hides again when the app changes. A swipe across the whole
   trackpad moves the pointer the width of the screen.
+- Draws its own on-screen keyboard over a running app when Menu is
+  pressed, so a search box can be filled from the couch: digits, lowercase
+  letters, `.`, Backspace, Space, Enter and Close, on keys styled like
+  Home's tiles, along the bottom of the screen. The D-pad or stick moves
+  the white focus (no repeat while held), A types the focused key into the
+  app through the seat keyboard, as if typed on a real one, and B is
+  Backspace. Menu again, or its Close key, closes it; Steam still goes Home.
+  While it is open, nothing else on the controller reaches the app, and
+  the trackpads do nothing. It opens with the focus on q.
+  ![The on-screen keyboard over a web app](docs/screenshots/keyboard.png)
 - Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
   minutes unless configured. The TV shows No Signal and may power itself
   down. Activity is a controller button, a stick past a quarter of its
@@ -145,9 +156,10 @@ nix build
 foreground surface was or wasn't scanned out directly. Add `emrakul=trace` for
 every redraw transition.
 
-`EMRAKUL_DUMP_HOME=/var/tmp/home.png` writes every Home frame to that file as
-a PNG, rendered offscreen from the same elements the screen gets, for seeing
-Home without being in front of the TV. It costs about 300 ms a frame at 4K.
+`EMRAKUL_DUMP_HOME=/var/tmp/home.png` writes every frame with Home or the
+on-screen keyboard in it to that file as a PNG, rendered offscreen from the
+same elements the screen gets, for seeing them without being in front of the
+TV. It costs about 300 ms a frame at 4K.
 
 ## Hardware notes: ganymede (GTX 1050 Ti, nvidia 580)
 

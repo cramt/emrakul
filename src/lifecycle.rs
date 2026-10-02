@@ -19,6 +19,7 @@ use smithay::reexports::calloop::{
 use crate::{
     apps::{self, App, AppId, Argv, Quit},
     gamepad::PadReader,
+    osk::OnScreenKeyboard,
     state::Emrakul,
 };
 
@@ -27,7 +28,8 @@ const GRACE: Duration = Duration::from_secs(5);
 
 pub enum Session {
     Home(Home),
-    Running(Running),
+    /// The app, and the on-screen keyboard over it while open.
+    Running(Running, Option<OnScreenKeyboard>),
     /// Going Home asked the app to end. Home is on screen and focus moves,
     /// but nothing launches until the app has actually gone: one app at a
     /// time.
@@ -81,7 +83,7 @@ impl Emrakul {
     pub fn home(&self) -> Option<&Home> {
         match &self.session {
             Session::Home(home) | Session::Ending(_, home) => Some(home),
-            Session::Running(_) => None,
+            Session::Running(..) => None,
         }
     }
 
@@ -101,7 +103,7 @@ impl Emrakul {
         let (home, can_launch) = match &mut self.session {
             Session::Home(home) => (home, true),
             Session::Ending(_, home) => (home, false),
-            Session::Running(_) => return,
+            Session::Running(..) => return,
         };
         let count = home.apps.len().max(1);
         match key {
@@ -130,11 +132,14 @@ impl Emrakul {
         if let Err(err) = self.recency.touch(&app.id) {
             tracing::warn!("{err:#}");
         }
-        self.session = Session::Running(Running {
-            id: app.id,
-            quit: app.quit,
-            pid,
-        });
+        self.session = Session::Running(
+            Running {
+                id: app.id,
+                quit: app.quit,
+                pid,
+            },
+            None,
+        );
         self.restack();
     }
 
@@ -163,7 +168,7 @@ impl Emrakul {
     /// Goes Home from an app: Home shows at once, and the app is asked to end.
     pub fn go_home(&mut self) {
         let running = match std::mem::replace(&mut self.session, Session::Home(Home::default())) {
-            Session::Running(running) => running,
+            Session::Running(running, _) => running,
             other => {
                 self.session = other;
                 return;
@@ -218,7 +223,7 @@ impl Emrakul {
                 self.session = Session::Home(home);
                 self.restack();
             }
-            Session::Running(running) if running.pid == pid => self.enter_home(),
+            Session::Running(running, _) if running.pid == pid => self.enter_home(),
             other => self.session = other,
         }
     }

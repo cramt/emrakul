@@ -90,8 +90,9 @@ pub struct Backend {
     outputs: DrmOutputManager<Allocator, Exporter, Feedback, DrmDeviceFd>,
     screen: Option<Screen>,
     redraw: Redraw,
-    /// `EMRAKUL_DUMP_HOME`: write every Home frame there as a PNG. A debug
-    /// aid for seeing Home without standing in front of the TV.
+    /// `EMRAKUL_DUMP_HOME`: write every frame with Home or the on-screen
+    /// keyboard in it there as a PNG. A debug aid for seeing what emrakul
+    /// draws without standing in front of the TV.
     dump_home: Option<PathBuf>,
 }
 
@@ -519,6 +520,7 @@ impl Emrakul {
             idle,
             session,
             home_view,
+            keyboard_view,
             seat,
             cursor,
             ..
@@ -590,6 +592,16 @@ impl Emrakul {
             let cursor = cursor.elements(&mut backend.renderer, pointer.current_location());
             elements.splice(0..0, cursor);
         }
+        // Over everything, the cursor included: the trackpad does nothing
+        // while it is open.
+        let keyboard = match &*session {
+            lifecycle::Session::Running(_, Some(keyboard)) => Some(keyboard),
+            _ => None,
+        };
+        if let Some(keyboard) = keyboard {
+            let keyboard = keyboard_view.elements(&mut backend.renderer, keyboard);
+            elements.splice(0..0, keyboard.into_iter().map(Element::from));
+        }
         if let Some(home) = home {
             elements.extend(
                 home_view
@@ -606,10 +618,14 @@ impl Emrakul {
             FrameFlags::DEFAULT,
         ) {
             Ok(frame) if !frame.is_empty => {
-                if let Some(path) = backend.dump_home.as_ref().filter(|_| home.is_some()) {
+                if let Some(path) = backend
+                    .dump_home
+                    .as_ref()
+                    .filter(|_| home.is_some() || keyboard.is_some())
+                {
                     match dump(&mut backend.renderer, &elements, output, path) {
-                        Ok(()) => tracing::info!(path = %path.display(), "dumped Home"),
-                        Err(err) => tracing::warn!("dumping Home: {err:#}"),
+                        Ok(()) => tracing::info!(path = %path.display(), "dumped a frame"),
+                        Err(err) => tracing::warn!("dumping a frame: {err:#}"),
                     }
                 }
                 let scanout = match frame.primary_element {

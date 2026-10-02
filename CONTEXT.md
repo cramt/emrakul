@@ -31,3 +31,7 @@ _Avoid_: Inactive, away
 **Blanked**:
 The state the TV machine enters when idle: the screen is switched off, and the TV may power itself down after a while. The running app keeps running, and the next activity brings back whatever was there. The input that wakes it does nothing else.
 _Avoid_: Screensaver, sleep, suspend
+
+**On-screen keyboard**:
+The keyboard emrakul draws over a running app when Menu is pressed. What you pick on it is typed into the app as if on a real keyboard. While it is open, the controller drives it and nothing else reaches the app.
+_Avoid_: OSK (in prose), virtual keyboard, text input

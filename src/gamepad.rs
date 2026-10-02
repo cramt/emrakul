@@ -21,7 +21,7 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-use crate::{idle::Activity, state::Emrakul};
+use crate::{idle::Activity, osk, state::Emrakul};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PadAction {
@@ -36,24 +36,38 @@ pub enum PadAction {
     Scroll(Point<f64, Logical>),
     /// The finger left the scrolling trackpad, so the client may coast.
     ScrollStop,
+    OpenKeyboard,
+    /// The on-screen keyboard is open and has this press.
+    Keyboard(osk::Input),
+}
+
+/// What the controller drives besides the Steam button, which always goes
+/// Home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    /// Keys and the pointer, for Home or the app.
+    App,
+    /// The on-screen keyboard. Nothing reaches the app but what it types.
+    Keyboard,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Binding {
     GoHome,
     Click,
+    OpenKeyboard,
     /// Pressed in order and released in reverse, so a modifier wraps its key.
     Keys(&'static [KeyCode]),
 }
 
 /// What each button does: one map for every web app, from
-/// <https://github.com/cramt/emrakul/issues/8>. Menu (`BTN_START`) is kept
-/// for the on-screen keyboard.
+/// <https://github.com/cramt/emrakul/issues/8>.
 fn binding(button: KeyCode) -> Option<Binding> {
     use KeyCode as K;
     Some(match button {
         K::BTN_MODE => Binding::GoHome,
         K::BTN_THUMB2 => Binding::Click,
+        K::BTN_START => Binding::OpenKeyboard,
         K::BTN_DPAD_UP => Binding::Keys(&[K::KEY_UP]),
         K::BTN_DPAD_DOWN => Binding::Keys(&[K::KEY_DOWN]),
         K::BTN_DPAD_LEFT => Binding::Keys(&[K::KEY_LEFT]),
@@ -67,6 +81,22 @@ fn binding(button: KeyCode) -> Option<Binding> {
         K::BTN_TL => Binding::Keys(&[K::KEY_J]),
         K::BTN_TR => Binding::Keys(&[K::KEY_L]),
         K::BTN_SELECT => Binding::Keys(&[K::KEY_ESC]),
+        _ => return None,
+    })
+}
+
+/// What a press does while the on-screen keyboard is open.
+fn keyboard_binding(button: KeyCode) -> Option<osk::Input> {
+    use KeyCode as K;
+    use osk::{Dir, Input};
+    Some(match button {
+        K::BTN_DPAD_UP => Input::Move(Dir::Up),
+        K::BTN_DPAD_DOWN => Input::Move(Dir::Down),
+        K::BTN_DPAD_LEFT => Input::Move(Dir::Left),
+        K::BTN_DPAD_RIGHT => Input::Move(Dir::Right),
+        K::BTN_SOUTH => Input::Press,
+        K::BTN_EAST => Input::Backspace,
+        K::BTN_START => Input::Close,
         _ => return None,
     })
 }
@@ -93,7 +123,8 @@ pub struct Pad {
     y: Stick,
     pointer: Trackpad,
     scroll: Trackpad,
-    /// Buttons whose press woke the screen. Their release goes with it.
+    /// Buttons whose press never reached the app: it woke the screen, or the
+    /// on-screen keyboard took it. Their release goes with it.
     swallowed: Vec<KeyCode>,
     /// Every absolute axis the controller reports, for telling activity
     /// from drift.
@@ -112,9 +143,9 @@ pub struct AxisRange {
 #[derive(Debug)]
 struct Stick {
     range: AxisRange,
-    /// The arrows for leaning negative (left, or up: evdev's Y grows
-    /// downwards) and positive.
-    arrows: (KeyCode, KeyCode),
+    /// Leaning negative (left, or up: evdev's Y grows downwards) and
+    /// positive.
+    dirs: (osk::Dir, osk::Dir),
     lean: Lean,
 }
 
@@ -122,20 +153,30 @@ struct Stick {
 enum Lean {
     Rest,
     Held(KeyCode),
-    /// Pushed to wake the screen: holds nothing, and its return does nothing.
+    /// Pushed to wake the screen, or to move the on-screen keyboard's focus:
+    /// holds nothing, and its return does nothing.
     Swallowed,
 }
 
+fn arrow(dir: osk::Dir) -> KeyCode {
+    match dir {
+        osk::Dir::Up => KeyCode::KEY_UP,
+        osk::Dir::Down => KeyCode::KEY_DOWN,
+        osk::Dir::Left => KeyCode::KEY_LEFT,
+        osk::Dir::Right => KeyCode::KEY_RIGHT,
+    }
+}
+
 impl Stick {
-    fn new(range: AxisRange, arrows: (KeyCode, KeyCode)) -> Self {
+    fn new(range: AxisRange, dirs: (osk::Dir, osk::Dir)) -> Self {
         Self {
             range,
-            arrows,
+            dirs,
             lean: Lean::Rest,
         }
     }
 
-    fn on_value(&mut self, value: i32, wakes: bool) -> Option<PadAction> {
+    fn on_value(&mut self, value: i32, wakes: bool, layer: Layer) -> Option<PadAction> {
         let lean = self.range.lean(value);
         match self.lean {
             Lean::Held(_) | Lean::Swallowed if lean.abs() > RECENTRE => None,
@@ -153,13 +194,17 @@ impl Stick {
                 None
             }
             Lean::Rest => {
-                let key = if lean < 0.0 {
-                    self.arrows.0
-                } else {
-                    self.arrows.1
-                };
-                self.lean = Lean::Held(key);
-                Some(PadAction::Key(key, KeyState::Pressed))
+                let dir = if lean < 0.0 { self.dirs.0 } else { self.dirs.1 };
+                match layer {
+                    Layer::App => {
+                        self.lean = Lean::Held(arrow(dir));
+                        Some(PadAction::Key(arrow(dir), KeyState::Pressed))
+                    }
+                    Layer::Keyboard => {
+                        self.lean = Lean::Swallowed;
+                        Some(PadAction::Keyboard(osk::Input::Move(dir)))
+                    }
+                }
             }
         }
     }
@@ -240,7 +285,6 @@ impl AxisRange {
 impl Pad {
     pub fn new(ranges: &[(AbsoluteAxisCode, AxisRange)]) -> Self {
         use AbsoluteAxisCode as A;
-        use KeyCode as K;
         let range = |code| {
             range_of(ranges, code).unwrap_or(AxisRange {
                 min: 0,
@@ -249,8 +293,8 @@ impl Pad {
             })
         };
         Self {
-            x: Stick::new(range(A::ABS_X), (K::KEY_LEFT, K::KEY_RIGHT)),
-            y: Stick::new(range(A::ABS_Y), (K::KEY_UP, K::KEY_DOWN)),
+            x: Stick::new(range(A::ABS_X), (osk::Dir::Left, osk::Dir::Right)),
+            y: Stick::new(range(A::ABS_Y), (osk::Dir::Up, osk::Dir::Down)),
             pointer: Trackpad::new(range(A::ABS_HAT1X), range(A::ABS_HAT1Y)),
             scroll: Trackpad::new(range(A::ABS_HAT0X), range(A::ABS_HAT0Y)),
             swallowed: Vec::new(),
@@ -285,11 +329,12 @@ impl Pad {
         }
     }
 
-    /// What this event does. `wakes` is whether it just woke the screen, in
-    /// which case it does nothing else, and nor does the release of a press
-    /// or the return of a stick that woke it. Positions are tracked either
-    /// way, so nothing jumps once the screen is back.
-    pub fn on_event(&mut self, event: InputEvent, wakes: bool) -> Vec<PadAction> {
+    /// What this event does, with `layer` being what the controller drives.
+    /// `wakes` is whether it just woke the screen, in which case it does
+    /// nothing else, and nor does the release of a press or the return of a
+    /// stick that woke it. Positions are tracked either way, so nothing
+    /// jumps once the screen is back.
+    pub fn on_event(&mut self, event: InputEvent, wakes: bool, layer: Layer) -> Vec<PadAction> {
         use AbsoluteAxisCode as A;
         match event.destructure() {
             EventSummary::Key(_, button, 1) if wakes => {
@@ -300,8 +345,17 @@ impl Pad {
                 self.swallowed.retain(|b| *b != button);
                 Vec::new()
             }
+            EventSummary::Key(_, button, 1) if layer == Layer::Keyboard => {
+                self.swallowed.push(button);
+                match (binding(button), keyboard_binding(button)) {
+                    (Some(Binding::GoHome), _) => vec![PadAction::GoHome],
+                    (_, Some(input)) => vec![PadAction::Keyboard(input)],
+                    _ => Vec::new(),
+                }
+            }
             EventSummary::Key(_, button, 1) => match binding(button) {
                 Some(Binding::GoHome) => vec![PadAction::GoHome],
+                Some(Binding::OpenKeyboard) => vec![PadAction::OpenKeyboard],
                 Some(Binding::Click) => vec![PadAction::Click(ButtonState::Pressed)],
                 Some(Binding::Keys(keys)) => keys
                     .iter()
@@ -309,6 +363,7 @@ impl Pad {
                     .collect(),
                 None => Vec::new(),
             },
+            // Pressed before the keyboard opened, so the app has it held.
             EventSummary::Key(_, button, 0) => match binding(button) {
                 Some(Binding::Click) => vec![PadAction::Click(ButtonState::Released)],
                 Some(Binding::Keys(keys)) => keys
@@ -316,12 +371,12 @@ impl Pad {
                     .rev()
                     .map(|key| PadAction::Key(*key, KeyState::Released))
                     .collect(),
-                Some(Binding::GoHome) | None => Vec::new(),
+                Some(Binding::GoHome | Binding::OpenKeyboard) | None => Vec::new(),
             },
             EventSummary::AbsoluteAxis(_, code, value) => {
                 match code {
-                    A::ABS_X => return self.x.on_value(value, wakes).into_iter().collect(),
-                    A::ABS_Y => return self.y.on_value(value, wakes).into_iter().collect(),
+                    A::ABS_X => return self.x.on_value(value, wakes, layer).into_iter().collect(),
+                    A::ABS_Y => return self.y.on_value(value, wakes, layer).into_iter().collect(),
                     A::ABS_HAT1X => self.pointer.now.0 = value,
                     A::ABS_HAT1Y => self.pointer.now.1 = value,
                     A::ABS_HAT0X => self.scroll.now.0 = value,
@@ -331,15 +386,18 @@ impl Pad {
                 Vec::new()
             }
             EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _) => {
-                let pointer = match self.pointer.end_frame() {
-                    Some(Stroke::Moved(by)) => Some(PadAction::Move(by)),
-                    Some(Stroke::Lifted) | None => None,
+                let (pointer, scroll) = (self.pointer.end_frame(), self.scroll.end_frame());
+                let pointer = match pointer {
+                    Some(Stroke::Moved(by)) if layer == Layer::App => Some(PadAction::Move(by)),
+                    _ => None,
                 };
                 // Natural scrolling, as on a phone: the page follows the finger.
-                let scroll = match self.scroll.end_frame() {
-                    Some(Stroke::Moved(by)) => Some(PadAction::Scroll(Point::from((-by.x, -by.y)))),
+                let scroll = match scroll {
+                    Some(Stroke::Moved(by)) if layer == Layer::App => {
+                        Some(PadAction::Scroll(Point::from((-by.x, -by.y))))
+                    }
                     Some(Stroke::Lifted) => Some(PadAction::ScrollStop),
-                    None => None,
+                    _ => None,
                 };
                 pointer.into_iter().chain(scroll).collect()
             }
@@ -547,20 +605,26 @@ impl Emrakul {
                 return;
             }
         };
-        // One at a time: a Launch changes what the next event means.
+        // One at a time: a Launch, or the keyboard opening, changes what the
+        // next event means.
         for event in events {
             let Some(gamepad) = self.gamepads.0.iter().find(|g| g.node == node) else {
                 return;
             };
             let wakes = gamepad.pad.is_activity(&event) && self.on_activity() == Activity::Woke;
+            let layer = self.pad_layer();
             let Some(gamepad) = self.gamepads.0.iter_mut().find(|g| g.node == node) else {
                 return;
             };
-            for action in gamepad.pad.on_event(event, wakes) {
+            for action in gamepad.pad.on_event(event, wakes, layer) {
                 tracing::trace!(?action, "controller");
                 match (self.pad_reader(), action) {
                     (_, PadAction::GoHome) => self.go_home(),
                     (PadReader::App, _) => {}
+                    (PadReader::Emrakul, PadAction::OpenKeyboard) => self.open_keyboard(),
+                    (PadReader::Emrakul, PadAction::Keyboard(input)) => {
+                        self.on_keyboard_input(input)
+                    }
                     (PadReader::Emrakul, PadAction::Key(key, state)) => self.pad_key(key, state),
                     (PadReader::Emrakul, PadAction::Move(by)) => self.move_pointer(by),
                     (PadReader::Emrakul, PadAction::Click(state)) => self.click(state),
@@ -651,8 +715,23 @@ mod tests {
     fn feed(pad: &mut Pad, events: impl IntoIterator<Item = InputEvent>) -> Vec<PadAction> {
         events
             .into_iter()
-            .flat_map(|event| pad.on_event(event, false))
+            .flat_map(|event| pad.on_event(event, false, Layer::App))
             .collect()
+    }
+
+    /// The same, with the on-screen keyboard open.
+    fn feed_keyboard(
+        pad: &mut Pad,
+        events: impl IntoIterator<Item = InputEvent>,
+    ) -> Vec<PadAction> {
+        events
+            .into_iter()
+            .flat_map(|event| pad.on_event(event, false, Layer::Keyboard))
+            .collect()
+    }
+
+    fn keyboard(input: osk::Input) -> PadAction {
+        PadAction::Keyboard(input)
     }
 
     fn tap(code: KeyCode) -> [InputEvent; 4] {
@@ -742,7 +821,6 @@ mod tests {
     fn unmapped_controls_do_nothing() {
         let mut pad = steam_controller();
         for button in [
-            KeyCode::BTN_START, // the on-screen keyboard's, later
             KeyCode::BTN_TL2,
             KeyCode::BTN_TR2,
             KeyCode::BTN_THUMBL,
@@ -769,12 +847,18 @@ mod tests {
     #[test]
     fn a_press_that_wakes_the_screen_is_swallowed_with_its_release() {
         let mut pad = steam_controller();
-        assert_eq!(pad.on_event(key(KeyCode::BTN_EAST, 1), true), []);
+        assert_eq!(
+            pad.on_event(key(KeyCode::BTN_EAST, 1), true, Layer::App),
+            []
+        );
         assert_eq!(
             feed(&mut pad, [syn(), key(KeyCode::BTN_EAST, 0), syn()]),
             []
         );
-        assert_eq!(pad.on_event(key(KeyCode::BTN_MODE, 1), true), []);
+        assert_eq!(
+            pad.on_event(key(KeyCode::BTN_MODE, 1), true, Layer::App),
+            []
+        );
         assert_eq!(feed(&mut pad, [key(KeyCode::BTN_MODE, 0)]), []);
         // The next press is an ordinary one.
         assert_eq!(
@@ -832,7 +916,7 @@ mod tests {
     fn a_stick_push_that_wakes_the_screen_presses_nothing() {
         let mut pad = steam_controller();
         let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
-        assert_eq!(pad.on_event(x(30000), true), []);
+        assert_eq!(pad.on_event(x(30000), true, Layer::App), []);
         assert_eq!(feed(&mut pad, [x(31000), x(0)]), []);
         assert_eq!(feed(&mut pad, [x(30000)]), [down(KeyCode::KEY_RIGHT)]);
     }
@@ -931,6 +1015,93 @@ mod tests {
         let mut pad = steam_controller();
         feed(&mut pad, right_pad((5000, 5000)));
         assert_eq!(feed(&mut pad, left_pad((9000, 9000))), []);
+    }
+
+    #[test]
+    fn menu_opens_the_keyboard() {
+        assert_eq!(
+            feed(&mut steam_controller(), tap(KeyCode::BTN_START)),
+            [PadAction::OpenKeyboard]
+        );
+    }
+
+    #[test]
+    fn with_the_keyboard_open_the_buttons_drive_it_and_type_nothing() {
+        use osk::{Dir, Input};
+        for (button, input) in [
+            (KeyCode::BTN_DPAD_UP, Input::Move(Dir::Up)),
+            (KeyCode::BTN_DPAD_DOWN, Input::Move(Dir::Down)),
+            (KeyCode::BTN_DPAD_LEFT, Input::Move(Dir::Left)),
+            (KeyCode::BTN_DPAD_RIGHT, Input::Move(Dir::Right)),
+            (KeyCode::BTN_SOUTH, Input::Press),
+            (KeyCode::BTN_EAST, Input::Backspace),
+            (KeyCode::BTN_START, Input::Close),
+        ] {
+            assert_eq!(
+                feed_keyboard(&mut steam_controller(), tap(button)),
+                [keyboard(input)],
+                "{button:?}"
+            );
+        }
+        for button in [KeyCode::BTN_NORTH, KeyCode::BTN_SELECT, KeyCode::BTN_THUMB2] {
+            assert_eq!(
+                feed_keyboard(&mut steam_controller(), tap(button)),
+                [],
+                "{button:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn steam_still_goes_home_with_the_keyboard_open() {
+        assert_eq!(
+            feed_keyboard(&mut steam_controller(), tap(KeyCode::BTN_MODE)),
+            [PadAction::GoHome]
+        );
+    }
+
+    #[test]
+    fn a_key_held_as_the_keyboard_opens_is_released_to_the_app() {
+        let mut pad = steam_controller();
+        assert_eq!(
+            feed(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 1), syn()]),
+            [down(KeyCode::KEY_DOWN)]
+        );
+        assert_eq!(
+            feed_keyboard(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 0), syn()]),
+            [up(KeyCode::KEY_DOWN)]
+        );
+    }
+
+    #[test]
+    fn a_press_the_keyboard_took_releases_nothing_once_it_has_closed() {
+        let mut pad = steam_controller();
+        feed_keyboard(&mut pad, [key(KeyCode::BTN_SOUTH, 1), syn()]);
+        assert_eq!(feed(&mut pad, [key(KeyCode::BTN_SOUTH, 0), syn()]), []);
+    }
+
+    #[test]
+    fn with_the_keyboard_open_a_stick_push_moves_once() {
+        let mut pad = steam_controller();
+        let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
+        assert_eq!(
+            feed_keyboard(&mut pad, [x(30000), x(32000)]),
+            [keyboard(osk::Input::Move(osk::Dir::Right))]
+        );
+        assert_eq!(feed_keyboard(&mut pad, [x(0)]), []);
+        assert_eq!(
+            feed_keyboard(&mut pad, [x(-30000)]),
+            [keyboard(osk::Input::Move(osk::Dir::Left))]
+        );
+    }
+
+    #[test]
+    fn with_the_keyboard_open_the_trackpads_move_nothing() {
+        let mut pad = steam_controller();
+        feed_keyboard(&mut pad, right_pad((5000, 5000)));
+        feed_keyboard(&mut pad, left_pad((5000, 5000)));
+        assert_eq!(feed_keyboard(&mut pad, right_pad((9000, 9000))), []);
+        assert_eq!(feed_keyboard(&mut pad, left_pad((9000, 9000))), []);
     }
 
     #[test]

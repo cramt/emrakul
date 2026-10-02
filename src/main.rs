@@ -8,6 +8,7 @@ mod icons;
 mod idle;
 mod input;
 mod lifecycle;
+mod osk;
 mod recency;
 mod state;
 

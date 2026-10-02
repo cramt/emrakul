@@ -62,6 +62,7 @@ use crate::{
     home,
     idle::Idle,
     lifecycle::{Home, Session},
+    osk,
     recency::Recency,
 };
 
@@ -92,6 +93,7 @@ pub struct Emrakul {
     /// the client would see half a keypress.
     pub waking_key: Option<smithay::input::keyboard::Keycode>,
     pub home_view: home::View,
+    pub keyboard_view: osk::View,
     pub cursor: Cursor,
 
     pub compositor_state: CompositorState,
@@ -140,6 +142,7 @@ impl Emrakul {
             idle_timer: None,
             waking_key: None,
             home_view: home::View::new()?,
+            keyboard_view: osk::View::new()?,
             cursor: Cursor::new(),
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
@@ -199,7 +202,7 @@ impl Emrakul {
     pub fn restack(&mut self) {
         let foreground = match self.session {
             Session::Ending(..) => None,
-            Session::Home(_) | Session::Running(_) => self.toplevels.last().cloned(),
+            Session::Home(_) | Session::Running(..) => self.toplevels.last().cloned(),
         };
         for window in self.space.elements().cloned().collect::<Vec<_>>() {
             self.space.unmap_elem(&window);
