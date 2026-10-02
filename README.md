@@ -91,8 +91,11 @@ What it does today:
   controller itself, so a press that wakes the screen during a Game still
   reaches the game.
 
-Next: the web app and game entries declared in nixconf, then the cutover
-that makes emrakul ganymede's only session.
+ganymede's cutover is in nixconf ([dd6eb8a](https://github.com/cramt/nixconf/commit/dd6eb8a)), waiting on a deploy:
+emrakul is its only session, and Home lists three web apps, YouTube,
+Nebula and Jellyfin, each Chromium with the VA-API flags below and its own
+profile under `~/.local/state/web-apps`. Plasma, SDDM and Steam are gone.
+Next: game entries over Moonlight.
 
 ## Configuration
 
