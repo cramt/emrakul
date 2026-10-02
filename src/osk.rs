@@ -77,6 +77,7 @@ pub const LAYOUT: [[Key; COLUMNS]; 5] = {
     const SPACE: Key = t(K::KEY_SPACE, "Space");
     const BACKSPACE: Key = t(K::KEY_BACKSPACE, "Backspace");
     const ENTER: Key = t(K::KEY_ENTER, "Enter");
+    const TAB: Key = t(K::KEY_TAB, "Tab");
     const CLOSE: Key = Key::Close;
     [
         [
@@ -128,7 +129,7 @@ pub const LAYOUT: [[Key; COLUMNS]; 5] = {
             BACKSPACE,
         ],
         [
-            CLOSE, CLOSE, SPACE, SPACE, SPACE, SPACE, SPACE, ENTER, ENTER, ENTER,
+            CLOSE, CLOSE, TAB, TAB, SPACE, SPACE, SPACE, SPACE, ENTER, ENTER,
         ],
     ]
 };
@@ -451,12 +452,16 @@ mod tests {
         walk(&mut keyboard, &[Dir::Down, Dir::Down, Dir::Down]);
         assert_eq!(typed(&mut keyboard), Outcome::Close);
         walk(&mut keyboard, &[Dir::Right]);
+        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_TAB));
+        walk(&mut keyboard, &[Dir::Right]);
         assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_SPACE));
         walk(&mut keyboard, &[Dir::Right]);
         assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_ENTER));
         assert_eq!(keyboard.on_input(Input::Move(Dir::Right)), Outcome::Nothing);
         walk(&mut keyboard, &[Dir::Left]);
         assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_SPACE));
+        walk(&mut keyboard, &[Dir::Left]);
+        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_TAB));
         walk(&mut keyboard, &[Dir::Left]);
         assert_eq!(typed(&mut keyboard), Outcome::Close);
     }
@@ -495,6 +500,6 @@ mod tests {
             let cols: Vec<_> = spans(row).flat_map(|(_, cols)| cols).collect();
             assert_eq!(cols, (0..COLUMNS).collect::<Vec<_>>(), "row {row}");
         }
-        assert_eq!(spans(4).count(), 3);
+        assert_eq!(spans(4).count(), 4);
     }
 }

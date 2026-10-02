@@ -64,23 +64,26 @@ What it does today:
   | D-pad, left stick past half way | arrows, repeating while held |
   | A | Enter |
   | B | Alt+Left (back) |
-  | X / Y | k / f |
+  | RT / LT, full pull | Tab / Shift+Tab, repeating while held |
+  | X | left click, where the pointer is |
+  | Y | k |
   | LB / RB | j / l |
   | View | Escape |
   | Right trackpad, its click | pointer, left button |
-  | Left trackpad | scroll, touchpad-style (the page follows the finger) |
+  | Left trackpad | scroll, wheel-style (finger up scrolls up) |
   | Menu | the on-screen keyboard, in an app |
-  | Triggers, stick clicks, right stick, grips, Quick access | nothing yet |
+  | Analog triggers, stick clicks, right stick, grips, Quick access | nothing yet |
 
-  Home reads the same arrows and Enter: they move the focus and launch. The
-  cursor is emrakul's own arrow, drawn at TV size; Chromium asks for it by
+  Web apps are driven by keyboard focus: the triggers move it, A
+  activates it. Home reads the same arrows and Enter: they move the focus
+  and launch. The cursor is emrakul's own arrow, drawn at TV size; Chromium asks for it by
   name over `wp_cursor_shape_v1` and hides it over a playing video. It
   appears in the middle of the screen at the first touch of the right
   trackpad and hides again when the app changes. A swipe across the whole
   trackpad moves the pointer the width of the screen.
 - Draws its own on-screen keyboard over a running app when Menu is
   pressed, so a search box can be filled from the couch: digits, lowercase
-  letters, `.`, Backspace, Space, Enter and Close, on keys styled like
+  letters, `.`, Backspace, Tab, Space, Enter and Close, on keys styled like
   Home's tiles, along the bottom of the screen. The D-pad or stick moves
   the white focus (no repeat while held), A types the focused key into the
   app through the seat keyboard, as if typed on a real one, and B is

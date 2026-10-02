@@ -39,4 +39,6 @@ Opening the puck's hidraw node unregisters the gamepad: Steam (still autostarted
 
 Trackpad touch has no key event of its own: a touch shows up as the pad's position axes moving.
 
+**Trackpad y grows upwards, stick y downwards.** hid-steam negates the sticks' y (`ABS_Y`, `ABS_RY`) to evdev's down-is-positive, but reports both pads' y (`ABS_HAT0Y`, `ABS_HAT1Y`) as the controller sends it: up is positive. Confirmed on the couch: with the pad read as down-positive, the pointer moved the wrong way vertically.
+
 **Sticks never go quiet.** Each stick axis reports at ~210 Hz with the controller at rest, wandering by about ±500 of 32767. Anything treating stick motion as activity (idle, Home navigation) needs a deadzone.

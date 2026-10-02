@@ -76,8 +76,15 @@ fn binding(button: KeyCode) -> Option<Binding> {
         // Back. Alt+Left is history back in YouTube and Jellyfin alike;
         // Escape only closes menus in YouTube.
         K::BTN_EAST => Binding::Keys(&[K::KEY_LEFTALT, K::KEY_LEFT]),
-        K::BTN_NORTH => Binding::Keys(&[K::KEY_K]),
-        K::BTN_WEST => Binding::Keys(&[K::KEY_F]),
+        // X: Alex found clicking a page's buttons with the pointer
+        // impractical, so focus navigation (Tab, Enter) does the work, and
+        // X clicks wherever the pointer already is.
+        K::BTN_NORTH => Binding::Click,
+        K::BTN_WEST => Binding::Keys(&[K::KEY_K]),
+        // The triggers' own full-pull buttons, not their analog axes: they
+        // fire near the end of the pull and come back with hysteresis.
+        K::BTN_TR2 => Binding::Keys(&[K::KEY_TAB]),
+        K::BTN_TL2 => Binding::Keys(&[K::KEY_LEFTSHIFT, K::KEY_TAB]),
         K::BTN_TL => Binding::Keys(&[K::KEY_J]),
         K::BTN_TR => Binding::Keys(&[K::KEY_L]),
         K::BTN_SELECT => Binding::Keys(&[K::KEY_ESC]),
@@ -387,11 +394,15 @@ impl Pad {
             }
             EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _) => {
                 let (pointer, scroll) = (self.pointer.end_frame(), self.scroll.end_frame());
+                // The pad's y grows upwards, the screen's downwards.
                 let pointer = match pointer {
-                    Some(Stroke::Moved(by)) if layer == Layer::App => Some(PadAction::Move(by)),
+                    Some(Stroke::Moved(by)) if layer == Layer::App => {
+                        Some(PadAction::Move(Point::from((by.x, -by.y))))
+                    }
                     _ => None,
                 };
-                // Natural scrolling, as on a phone: the page follows the finger.
+                // Wheel-style: the pad's y grows upwards, so a finger moving
+                // up scrolls up, towards the top.
                 let scroll = match scroll {
                     Some(Stroke::Moved(by)) if layer == Layer::App => {
                         Some(PadAction::Scroll(Point::from((-by.x, -by.y))))
@@ -775,8 +786,8 @@ mod tests {
             (KeyCode::BTN_DPAD_LEFT, KeyCode::KEY_LEFT),
             (KeyCode::BTN_DPAD_RIGHT, KeyCode::KEY_RIGHT),
             (KeyCode::BTN_SOUTH, KeyCode::KEY_ENTER),
-            (KeyCode::BTN_NORTH, KeyCode::KEY_K),
-            (KeyCode::BTN_WEST, KeyCode::KEY_F),
+            (KeyCode::BTN_WEST, KeyCode::KEY_K),
+            (KeyCode::BTN_TR2, KeyCode::KEY_TAB),
             (KeyCode::BTN_TL, KeyCode::KEY_J),
             (KeyCode::BTN_TR, KeyCode::KEY_L),
             (KeyCode::BTN_SELECT, KeyCode::KEY_ESC),
@@ -803,6 +814,19 @@ mod tests {
     }
 
     #[test]
+    fn lt_is_shift_tab_released_in_reverse() {
+        assert_eq!(
+            feed(&mut steam_controller(), tap(KeyCode::BTN_TL2)),
+            [
+                down(KeyCode::KEY_LEFTSHIFT),
+                down(KeyCode::KEY_TAB),
+                up(KeyCode::KEY_TAB),
+                up(KeyCode::KEY_LEFTSHIFT),
+            ]
+        );
+    }
+
+    #[test]
     fn a_held_button_holds_its_key_until_released() {
         let mut pad = steam_controller();
         assert_eq!(
@@ -821,8 +845,6 @@ mod tests {
     fn unmapped_controls_do_nothing() {
         let mut pad = steam_controller();
         for button in [
-            KeyCode::BTN_TL2,
-            KeyCode::BTN_TR2,
             KeyCode::BTN_THUMBL,
             KeyCode::BTN_THUMBR,
             KeyCode::BTN_THUMB,
@@ -941,8 +963,9 @@ mod tests {
         let mut pad = steam_controller();
         // Touching down only says where the finger is.
         assert_eq!(feed(&mut pad, right_pad((-3000, 1000))), []);
-        // Half the pad's width is half the screen's (1920 px).
-        let moved = feed(&mut pad, right_pad((-3000 + 32767, 1000 - 16383)));
+        // Half the pad's width is half the screen's (1920 px). The pad's y
+        // grows upwards, the screen's downwards.
+        let moved = feed(&mut pad, right_pad((-3000 + 32767, 1000 + 16383)));
         let [PadAction::Move(by)] = moved[..] else {
             panic!("{moved:?}");
         };
@@ -987,21 +1010,24 @@ mod tests {
     }
 
     #[test]
-    fn the_right_trackpad_click_is_the_left_button() {
-        assert_eq!(
-            feed(&mut steam_controller(), tap(KeyCode::BTN_THUMB2)),
-            [
-                PadAction::Click(ButtonState::Pressed),
-                PadAction::Click(ButtonState::Released)
-            ]
-        );
+    fn x_and_the_right_trackpad_click_are_the_left_button() {
+        for button in [KeyCode::BTN_NORTH, KeyCode::BTN_THUMB2] {
+            assert_eq!(
+                feed(&mut steam_controller(), tap(button)),
+                [
+                    PadAction::Click(ButtonState::Pressed),
+                    PadAction::Click(ButtonState::Released)
+                ],
+                "{button:?}"
+            );
+        }
     }
 
     #[test]
-    fn the_left_trackpad_scrolls_with_the_finger_then_stops_on_lift() {
+    fn the_left_trackpad_scrolls_like_a_wheel_then_stops_on_lift() {
         let mut pad = steam_controller();
         assert_eq!(feed(&mut pad, left_pad((0, 10000))), []);
-        // Finger up the pad: the page follows it up, so it scrolls down.
+        // Finger down the pad (its y grows upwards): scrolls down.
         let scrolled = feed(&mut pad, left_pad((0, 10000 - 3277)));
         let [PadAction::Scroll(by)] = scrolled[..] else {
             panic!("{scrolled:?}");
