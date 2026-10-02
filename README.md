@@ -21,9 +21,20 @@ What it does today:
 - Opens one configured DRM card and connector, and sets the configured mode or
   the display's preferred one.
 - Lists every app (installed desktop entries from `XDG_DATA_HOME` and
-  `XDG_DATA_DIRS`) on a placeholder Home, most recently launched first, then
-  by name. Entries marked `Hidden`, `NoDisplay` or `OnlyShowIn` aren't apps.
-  The order lives in `$XDG_STATE_HOME/emrakul/recent`, so it survives restarts.
+  `XDG_DATA_DIRS`) on Home, most recently launched first. Apps never launched
+  follow: entries with any `X-Emrakul-*` key (the ones nixconf declares for
+  the TV) first, then the rest, each A to Z. Entries marked `Hidden`,
+  `NoDisplay` or `OnlyShowIn` aren't apps. The order lives in
+  `$XDG_STATE_HOME/emrakul/recent`, so it survives restarts.
+- Draws Home as the webOS ribbon: the focused app's name large over a dark
+  backdrop, and one row of tiles along the bottom that scrolls once four
+  tiles are left of the focus. Each tile is the entry's `Icon=` (hicolor's
+  scalable SVG, else its largest PNG, else `pixmaps`; the first letter of
+  its name if there is none) centred on its `X-Emrakul-Brand=#rrggbb`
+  colour, or dark grey. Focus starts on the app just quit. Home only
+  redraws when focus moves: one frame per press, 20 to 30 ms to render on
+  ganymede, and nothing while it sits there.
+  ![Home on ganymede](docs/screenshots/home-ribbon.png)
 - Runs one app at a time. Going Home asks it to close (`xdg_toplevel.close`,
   or the entry's `X-Emrakul-Quit` command if it has one), then sends its
   process group SIGTERM after 5 s and SIGKILL 5 s after that. Whenever the
@@ -37,8 +48,7 @@ What it does today:
 - Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
   Ctrl+Alt+H (go Home, the keyboard's Steam button). Every other key goes
   to the foreground client, except on Home itself, where arrows move the focus
-  and Enter launches. Home is a solid colour for now; the focused app's name
-  is only in the log.
+  and Enter launches.
 - Reads gamepads (the Steam Controller through the kernel's `hid-steam`
   driver, Linux 7.3+) straight from their evdev nodes, following udev as they
   come and go with the wireless link. The Steam button (`BTN_MODE`) goes Home
@@ -59,7 +69,8 @@ What it does today:
   controller itself, so a press that wakes the screen during a Game still
   reaches the game.
 
-Next: Home drawn for real: names, icons and focus.
+Next: the web app and game entries declared in nixconf, then the cutover
+that makes emrakul ganymede's only session.
 
 ## Configuration
 
@@ -108,6 +119,10 @@ nix build
 `RUST_LOG=emrakul=debug` logs which plane each frame went out on, and why the
 foreground surface was or wasn't scanned out directly. Add `emrakul=trace` for
 every redraw transition.
+
+`EMRAKUL_DUMP_HOME=/var/tmp/home.png` writes every Home frame to that file as
+a PNG, rendered offscreen from the same elements the screen gets, for seeing
+Home without being in front of the TV. It costs about 300 ms a frame at 4K.
 
 ## Hardware notes: ganymede (GTX 1050 Ti, nvidia 580)
 

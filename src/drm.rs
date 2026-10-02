@@ -1,4 +1,8 @@
-use std::{os::fd::OwnedFd, path::Path, time::Duration};
+use std::{
+    os::fd::OwnedFd,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, bail};
 use smithay::{
@@ -18,13 +22,15 @@ use smithay::{
         egl::{EGLContext, EGLDisplay, context::ContextPriority},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            ImportDma, ImportMemWl,
+            Bind, ExportMem, ImportDma, ImportMemWl, Offscreen, TextureMapping as _,
+            damage::OutputDamageTracker,
             element::{
                 Id, Kind,
+                memory::MemoryRenderBufferRenderElement,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
                 utils::select_dmabuf_feedback,
             },
-            gles::GlesRenderer,
+            gles::{GlesRenderer, GlesTexture},
         },
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
     },
@@ -46,7 +52,7 @@ use smithay::{
             presentation_time::server::wp_presentation_feedback,
         },
     },
-    utils::{DeviceFd, Logical, Scale, Size},
+    utils::{DeviceFd, Logical, Rectangle, Scale, Size, Transform},
     wayland::{
         dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
         presentation::Refresh,
@@ -56,6 +62,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use crate::{
     config::{Config, Mode},
+    lifecycle,
     state::Emrakul,
 };
 
@@ -63,14 +70,17 @@ use crate::{
 /// milestone: it needs the colour pipeline to mean something first.
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
 
-/// The placeholder Home: whatever no client covers. A fullscreen app covers
-/// all of it, so this only shows when nothing is mapped.
-const HOME_COLOUR: [f32; 4] = [0.08, 0.10, 0.18, 1.0];
+/// Whatever nothing covers. Home and fullscreen apps both cover all of it.
+const CLEAR_COLOUR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 type Feedback = Option<OutputPresentationFeedback>;
-type Element = WaylandSurfaceRenderElement<GlesRenderer>;
+smithay::render_elements! {
+    pub Element<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Home=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
 
 pub struct Backend {
     session: LibSeatSession,
@@ -80,6 +90,9 @@ pub struct Backend {
     outputs: DrmOutputManager<Allocator, Exporter, Feedback, DrmDeviceFd>,
     screen: Option<Screen>,
     redraw: Redraw,
+    /// `EMRAKUL_DUMP_HOME`: write every Home frame there as a PNG. A debug
+    /// aid for seeing Home without standing in front of the TV.
+    dump_home: Option<PathBuf>,
 }
 
 /// The TV, once its connector has been set up.
@@ -199,6 +212,7 @@ impl Backend {
                 outputs,
                 screen: None,
                 redraw: Redraw::Idle,
+                dump_home: std::env::var_os("EMRAKUL_DUMP_HOME").map(PathBuf::from),
             },
             Sources {
                 session: session_notifier,
@@ -503,6 +517,8 @@ impl Emrakul {
             space,
             clock,
             idle,
+            session,
+            home_view,
             ..
         } = self;
         // Queueing a frame would switch the screen back on. Clients get no
@@ -522,7 +538,7 @@ impl Emrakul {
         // ScanoutCandidate is what lets the DRM compositor put a client's buffer
         // straight on the primary plane. Window::render_elements marks surfaces
         // Unspecified, which rules that out before it is even tried.
-        let elements: Vec<Element> = space
+        let mut elements: Vec<Element> = space
             .elements()
             .filter_map(|window| Some((window, window.toplevel()?.wl_surface().clone())))
             .flat_map(|(window, surface)| {
@@ -555,14 +571,37 @@ impl Emrakul {
                 popups.into_iter().chain(toplevel)
             })
             .collect();
+        // Home shows whenever no app's window covers it.
+        let home = match &*session {
+            lifecycle::Session::Home(home) | lifecycle::Session::Ending(_, home)
+                if elements.is_empty() =>
+            {
+                Some(home)
+            }
+            _ => None,
+        };
+        if let Some(home) = home {
+            elements.extend(
+                home_view
+                    .elements(&mut backend.renderer, home)
+                    .into_iter()
+                    .map(Element::from),
+            );
+        }
 
         backend.redraw = match screen.drm_output.render_frame(
             &mut backend.renderer,
             &elements,
-            HOME_COLOUR,
+            CLEAR_COLOUR,
             FrameFlags::DEFAULT,
         ) {
             Ok(frame) if !frame.is_empty => {
+                if let Some(path) = backend.dump_home.as_ref().filter(|_| home.is_some()) {
+                    match dump(&mut backend.renderer, &elements, output, path) {
+                        Ok(()) => tracing::info!(path = %path.display(), "dumped Home"),
+                        Err(err) => tracing::warn!("dumping Home: {err:#}"),
+                    }
+                }
                 let scanout = match frame.primary_element {
                     PrimaryPlaneElement::Swapchain(_) => Scanout::Composited,
                     PrimaryPlaneElement::Element(_) => Scanout::Direct,
@@ -737,4 +776,45 @@ fn surface_feedback(
             .build()
             .context("building scanout feedback")?,
     })
+}
+
+/// Renders `elements` once more into an offscreen texture, the same way the
+/// screen gets them, and writes that to `path` as a PNG.
+fn dump(
+    renderer: &mut GlesRenderer,
+    elements: &[Element],
+    output: &Output,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let size = output
+        .current_mode()
+        .context("the output has no mode")?
+        .size;
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+    let mut texture: GlesTexture = renderer
+        .create_buffer(Fourcc::Abgr8888, buffer_size)
+        .context("creating the texture")?;
+    let mut target = renderer.bind(&mut texture).context("binding the texture")?;
+    OutputDamageTracker::new(size, 1.0, Transform::Normal)
+        .render_output(renderer, &mut target, 0, elements, CLEAR_COLOUR)
+        .map_err(|e| anyhow::anyhow!("rendering: {e:?}"))?;
+    let mapping = renderer
+        .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
+        .context("reading the frame back")?;
+    let mut pixels = renderer
+        .map_texture(&mapping)
+        .context("mapping the frame")?
+        .to_vec();
+    // Seen on ganymede: unflipped mappings of an offscreen texture come
+    // back bottom row first.
+    if !mapping.flipped() {
+        let row = buffer_size.w as usize * 4;
+        pixels = pixels.chunks(row).rev().flatten().copied().collect();
+    }
+    let size = tiny_skia::IntSize::from_wh(buffer_size.w as u32, buffer_size.h as u32)
+        .context("an empty output")?;
+    tiny_skia::Pixmap::from_vec(pixels, size)
+        .context("a frame of the wrong size")?
+        .save_png(path)
+        .with_context(|| format!("writing {}", path.display()))
 }

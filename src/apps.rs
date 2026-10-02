@@ -52,6 +52,25 @@ pub struct App {
     pub name: String,
     pub exec: Argv,
     pub quit: Quit,
+    /// `Icon=`: a name to look up in the icon theme, or an absolute path.
+    pub icon: Option<String>,
+    /// Carries an `X-Emrakul-*` key, which only entries nixconf declares for
+    /// the TV do. Before anything has been used, these come first on Home.
+    pub declared: bool,
+    /// `X-Emrakul-Brand=#rrggbb`: the colour of its tile on Home.
+    pub brand: Option<Rgb>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgb(pub [u8; 3]);
+
+impl Rgb {
+    /// `#rrggbb`, nothing else.
+    fn parse(hex: &str) -> Option<Self> {
+        let digits = hex.strip_prefix('#').filter(|d| d.len() == 6)?;
+        let channel = |i: usize| u8::from_str_radix(digits.get(i..i + 2)?, 16).ok();
+        Some(Self([channel(0)?, channel(2)?, channel(4)?]))
+    }
 }
 
 /// How going Home ends an app.
@@ -180,6 +199,9 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
         name: name.to_owned(),
         exec,
         quit: command("X-Emrakul-Quit").map_or(Quit::Close, Quit::Run),
+        icon: get("Icon").filter(|i| !i.is_empty()).map(str::to_owned),
+        declared: keys.keys().any(|key| key.starts_with("X-Emrakul-")),
+        brand: get("X-Emrakul-Brand").and_then(Rgb::parse),
     })
 }
 
@@ -290,8 +312,34 @@ mod tests {
                 name: "Foot".into(),
                 exec: argv(&["foot", "--server"]),
                 quit: Quit::Close,
+                icon: None,
+                declared: false,
+                brand: None,
             }
         );
+    }
+
+    #[test]
+    fn any_x_emrakul_key_marks_an_entry_declared() {
+        let plain = app("[Desktop Entry]\nType=Application\nName=Ark\nExec=ark\nIcon=ark\n");
+        assert!(!plain.declared);
+        assert_eq!(plain.icon.as_deref(), Some("ark"));
+        let declared = app(
+            "[Desktop Entry]\nType=Application\nName=YouTube\nExec=chromium\nX-Emrakul-Brand=#FF0033\n",
+        );
+        assert!(declared.declared);
+        assert_eq!(declared.brand, Some(Rgb([0xff, 0x00, 0x33])));
+    }
+
+    #[test]
+    fn a_malformed_brand_colour_is_ignored() {
+        for bad in ["red", "#fff", "#12345g", "ff0033", "#ff00331", "#ff003é"] {
+            let app = app(&format!(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nX-Emrakul-Brand={bad}\n"
+            ));
+            assert_eq!(app.brand, None, "{bad}");
+            assert!(app.declared, "{bad}");
+        }
     }
 
     #[test]

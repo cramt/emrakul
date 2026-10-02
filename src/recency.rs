@@ -62,11 +62,12 @@ impl Recency {
         std::fs::rename(partial, &self.path)
     }
 
-    /// Recently launched apps first, then the never-launched ones by name.
+    /// Recently launched apps first, then the never-launched ones: those
+    /// nixconf declared for the TV, then the rest, each by name.
     pub fn order(&self, mut apps: Vec<App>) -> Vec<App> {
         apps.sort_by_cached_key(|app| {
             let rank = self.ids.iter().position(|id| *id == app.id);
-            (rank.is_none(), rank, app.name.to_lowercase())
+            (rank.is_none(), rank, !app.declared, app.name.to_lowercase())
         });
         apps
     }
@@ -78,6 +79,10 @@ mod tests {
     use crate::apps::{Argv, Quit};
 
     fn app(id: &str, name: &str) -> App {
+        declared_app(id, name, false)
+    }
+
+    fn declared_app(id: &str, name: &str, declared: bool) -> App {
         App {
             id: AppId::new(id),
             name: name.into(),
@@ -86,6 +91,9 @@ mod tests {
                 args: vec![],
             },
             quit: Quit::Close,
+            icon: None,
+            declared,
+            brand: None,
         }
     }
 
@@ -125,6 +133,29 @@ mod tests {
         assert_eq!(
             names(&recency.order(apps())),
             ["Celeste", "Hades", "jellyfin", "YouTube"]
+        );
+    }
+
+    #[test]
+    fn declared_entries_come_before_the_rest_until_used() {
+        let state = StateFile::new("declared");
+        let mut recency = Recency::load(state.0.clone()).unwrap();
+        let mut apps = apps();
+        apps.push(declared_app("zz.desktop", "Zelda", true));
+        apps.push(declared_app("ark.desktop", "Ark", false));
+        apps.push(declared_app("bal.desktop", "Balatro", true));
+        assert_eq!(
+            names(&recency.order(apps.clone())),
+            [
+                "Balatro", "Zelda", "Ark", "Celeste", "Hades", "jellyfin", "YouTube"
+            ]
+        );
+        recency.touch(&AppId::new("hades.desktop")).unwrap();
+        assert_eq!(
+            names(&recency.order(apps)),
+            [
+                "Hades", "Balatro", "Zelda", "Ark", "Celeste", "jellyfin", "YouTube"
+            ]
         );
     }
 

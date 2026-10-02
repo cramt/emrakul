@@ -52,6 +52,7 @@ use crate::{
     config::Config,
     drm::Backend,
     gamepad::Gamepads,
+    home,
     idle::Idle,
     lifecycle::{Home, Session},
     recency::Recency,
@@ -83,6 +84,7 @@ pub struct Emrakul {
     /// The key that woke the screen. Its release is swallowed with it, or
     /// the client would see half a keypress.
     pub waking_key: Option<smithay::input::keyboard::Keycode>,
+    pub home_view: home::View,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -128,6 +130,7 @@ impl Emrakul {
             idle,
             idle_timer: None,
             waking_key: None,
+            home_view: home::View::new()?,
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
@@ -184,7 +187,7 @@ impl Emrakul {
     /// ending, Home is already on screen, so nothing is mapped.
     pub fn restack(&mut self) {
         let foreground = match self.session {
-            Session::Ending(_) => None,
+            Session::Ending(..) => None,
             Session::Home(_) | Session::Running(_) => self.toplevels.last().cloned(),
         };
         for window in self.space.elements().cloned().collect::<Vec<_>>() {

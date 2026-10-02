@@ -30,6 +30,8 @@
 
       commonArgs = {
         inherit src;
+        # Home's one font, baked into the binary as a store path (src/home.rs).
+        EMRAKUL_FONT = "${pkgs.inter}/share/fonts/truetype/Inter.ttc";
         strictDeps = true;
         nativeBuildInputs = [pkgs.pkg-config];
         buildInputs = with pkgs; [
@@ -73,6 +75,7 @@
       };
 
       devShells.default = craneLib.devShell {
+        inherit (commonArgs) EMRAKUL_FONT;
         inputsFrom = [emrakul];
         packages = with pkgs; [rust-analyzer cargo-nextest];
       };

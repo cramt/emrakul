@@ -2,6 +2,8 @@ mod apps;
 mod config;
 mod drm;
 mod gamepad;
+mod home;
+mod icons;
 mod idle;
 mod input;
 mod lifecycle;
