@@ -69,6 +69,7 @@ What it does today:
   | Y | k |
   | LB / RB | j / l |
   | View | Escape |
+| R5 / L5 (lower grips) | zoom in / out (Ctrl+= / Ctrl+-) |
   | Right trackpad, its click | pointer, left button |
   | Left trackpad | scroll, wheel-style (finger up scrolls up) |
   | Menu | the on-screen keyboard, in an app |

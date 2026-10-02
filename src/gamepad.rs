@@ -88,6 +88,10 @@ fn binding(button: KeyCode) -> Option<Binding> {
         K::BTN_TL => Binding::Keys(&[K::KEY_J]),
         K::BTN_TR => Binding::Keys(&[K::KEY_L]),
         K::BTN_SELECT => Binding::Keys(&[K::KEY_ESC]),
+        // Lower back grips (R5, L5): page zoom, which Chromium remembers per
+        // site. Codes 551/550 are BTN_GRIPR2/BTN_GRIPL2; evdev-rs predates them.
+        K(551) => Binding::Keys(&[K::KEY_LEFTCTRL, K::KEY_EQUAL]),
+        K(550) => Binding::Keys(&[K::KEY_LEFTCTRL, K::KEY_MINUS]),
         _ => return None,
     })
 }
@@ -838,6 +842,28 @@ mod tests {
         assert_eq!(
             feed(&mut pad, [key(KeyCode::BTN_DPAD_DOWN, 0), syn()]),
             [up(KeyCode::KEY_DOWN)]
+        );
+    }
+
+    #[test]
+    fn lower_grips_zoom_the_page() {
+        assert_eq!(
+            feed(&mut steam_controller(), tap(KeyCode(551))),
+            [
+                down(KeyCode::KEY_LEFTCTRL),
+                down(KeyCode::KEY_EQUAL),
+                up(KeyCode::KEY_EQUAL),
+                up(KeyCode::KEY_LEFTCTRL)
+            ]
+        );
+        assert_eq!(
+            feed(&mut steam_controller(), tap(KeyCode(550))),
+            [
+                down(KeyCode::KEY_LEFTCTRL),
+                down(KeyCode::KEY_MINUS),
+                up(KeyCode::KEY_MINUS),
+                up(KeyCode::KEY_LEFTCTRL)
+            ]
         );
     }
 
