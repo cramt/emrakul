@@ -1,6 +1,7 @@
 mod apps;
 mod config;
 mod drm;
+mod gamepad;
 mod input;
 mod lifecycle;
 mod recency;
@@ -33,6 +34,7 @@ fn main() -> anyhow::Result<()> {
         backend,
     )?;
     drm::start(&mut state, sources)?;
+    state.watch_gamepads()?;
     tracing::info!(socket = ?state.socket_name, "listening");
 
     if let Some(argv) = &state.config.launch {

@@ -49,6 +49,7 @@ use smithay::{
 use crate::{
     config::Config,
     drm::Backend,
+    gamepad::Gamepads,
     lifecycle::{Home, Session},
     recency::Recency,
 };
@@ -72,6 +73,7 @@ pub struct Emrakul {
 
     pub session: Session,
     pub recency: Recency,
+    pub gamepads: Gamepads,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -112,6 +114,7 @@ impl Emrakul {
             space: Space::default(),
             session: Session::Home(Home::default()),
             recency: Recency::load(Recency::default_path()?)?,
+            gamepads: Gamepads::default(),
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),

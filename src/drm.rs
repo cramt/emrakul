@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{os::fd::OwnedFd, path::Path, time::Duration};
 
 use anyhow::{Context, bail};
 use smithay::{
@@ -234,6 +234,23 @@ impl Backend {
     pub fn output_size(&self) -> Option<Size<i32, Logical>> {
         let mode = self.output()?.current_mode()?;
         Some(mode.size.to_logical(1))
+    }
+
+    /// Open an input node through the session, so the seat decides who gets
+    /// it and revokes it on a VT switch.
+    pub fn open_input(&mut self, node: &Path) -> anyhow::Result<OwnedFd> {
+        self.session
+            .open(
+                node,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+            )
+            .with_context(|| format!("opening {}", node.display()))
+    }
+
+    pub fn close_input(&mut self, fd: OwnedFd) {
+        if let Err(err) = self.session.close(fd) {
+            tracing::warn!(?err, "closing an input node");
+        }
     }
 
     pub fn change_vt(&mut self, vt: i32) {
@@ -639,6 +656,7 @@ impl Emrakul {
             SessionEvent::PauseSession => {
                 tracing::info!("session paused");
                 self.backend.libinput.suspend();
+                self.close_gamepads();
                 self.backend.outputs.pause();
             }
             SessionEvent::ActivateSession => {
@@ -646,6 +664,7 @@ impl Emrakul {
                 if self.backend.libinput.resume().is_err() {
                     tracing::error!("libinput failed to resume");
                 }
+                self.scan_gamepads();
                 if let Err(err) = self.backend.outputs.lock().activate(false) {
                     tracing::error!(?err, "reactivating DRM");
                 }

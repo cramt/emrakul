@@ -35,13 +35,18 @@ What it does today:
   web app's `<select>` dropdowns and context menus show above it, kept on the
   screen. They close when their app leaves the screen.
 - Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
-  Ctrl+Alt+H (go Home, standing in for the Steam button). Every other key goes
+  Ctrl+Alt+H (go Home, the keyboard's Steam button). Every other key goes
   to the foreground client, except on Home itself, where arrows move the focus
   and Enter launches. Home is a solid colour for now; the focused app's name
   is only in the log.
+- Reads gamepads (the Steam Controller through the kernel's `hid-steam`
+  driver, Linux 7.3+) straight from their evdev nodes, following udev as they
+  come and go with the wireless link. The Steam button (`BTN_MODE`) goes Home
+  from anywhere. On Home, a stand-in mapping until the full controller table
+  is decided: D-pad, or the left stick pushed past half way, moves the focus,
+  and A launches. Over an app, only the Steam button does anything so far.
 
-Next: the 2026 Steam Controller through the kernel's `hid-steam` driver (Linux
-7.3+), and Home drawn for real: names, icons and focus.
+Next: Home drawn for real: names, icons and focus.
 
 ## Configuration
 
@@ -72,7 +77,10 @@ services.emrakul = {
 The module runs emrakul as a system service on a VT, with a PAM login session,
 and switches that VT's getty off. It refuses to evaluate alongside a display
 manager, because whichever starts second gets no DRM master and shows a black
-screen.
+screen. It also sets `hid_steam lizard_mode=0`, without which the
+gamepad node stays silent, and takes the Steam Controller's hidraw nodes
+away from the seat's user, since anything opening one makes `hid-steam`
+unregister the gamepad.
 
 ## Development
 

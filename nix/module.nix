@@ -74,6 +74,21 @@ in {
       }
     ];
 
+    # In hid-steam's default lizard mode the Steam Controller pretends to be
+    # a keyboard and mouse, and its gamepad node stays silent.
+    boot.extraModprobeConfig = "options hid_steam lizard_mode=0";
+
+    # Anything opening the Steam Controller puck's hidraw makes hid-steam
+    # unregister the gamepad, and Steam's udev rules (60-steam-input) hand
+    # that hidraw to the seat's user. Take it back, so nothing the user runs
+    # can knock the controller out. This has to sort after the Steam rules and
+    # before 73-seat-late, which turns the uaccess tag into an ACL.
+    services.udev.packages = [
+      (pkgs.writeTextDir "lib/udev/rules.d/61-emrakul-steam-hidraw.rules" ''
+        SUBSYSTEM=="hidraw", KERNELS=="*:28DE:*", TAG-="uaccess", MODE="0600", GROUP="root"
+      '')
+    ];
+
     systemd.services."getty@${tty}".enable = false;
     systemd.services."autovt@${tty}".enable = false;
 
