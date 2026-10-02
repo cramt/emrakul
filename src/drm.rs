@@ -28,7 +28,10 @@ use smithay::{
         },
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
     },
-    desktop::utils::{OutputPresentationFeedback, surface_presentation_feedback_flags_from_states},
+    desktop::{
+        PopupManager,
+        utils::{OutputPresentationFeedback, surface_presentation_feedback_flags_from_states},
+    },
     output::{Mode as WlMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{LoopHandle, RegistrationToken},
@@ -480,14 +483,31 @@ impl Emrakul {
             .flat_map(|(window, surface)| {
                 let location =
                     space.element_location(window).unwrap_or_default() - window.geometry().loc;
-                render_elements_from_surface_tree(
+                // Front to back, so popups come first to land above their
+                // toplevel. Same placement as Smithay's own Window rendering.
+                let popups: Vec<Element> = PopupManager::popups_for_surface(&surface)
+                    .flat_map(|(popup, offset)| {
+                        let location =
+                            location + window.geometry().loc + offset - popup.geometry().loc;
+                        render_elements_from_surface_tree(
+                            &mut backend.renderer,
+                            popup.wl_surface(),
+                            location.to_physical_precise_round::<_, i32>(scale),
+                            scale,
+                            1.0,
+                            Kind::Unspecified,
+                        )
+                    })
+                    .collect();
+                let toplevel: Vec<Element> = render_elements_from_surface_tree(
                     &mut backend.renderer,
                     &surface,
                     location.to_physical_precise_round::<_, i32>(scale),
                     scale,
                     1.0,
                     Kind::ScanoutCandidate,
-                )
+                );
+                popups.into_iter().chain(toplevel)
             })
             .collect();
 

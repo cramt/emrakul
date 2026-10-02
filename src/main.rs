@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
 
     event_loop.run(None, &mut state, |state| {
         state.space.refresh();
+        state.popups.cleanup();
         if let Err(err) = state.display_handle.flush_clients() {
             tracing::warn!(?err, "flushing clients");
         }

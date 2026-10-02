@@ -31,7 +31,9 @@ What it does today:
 - Shows exactly one toplevel, fullscreen and with no decorations. The newest
   one wins, and closing it brings back the one before.
 - Speaks enough Wayland for real clients: shm, dmabuf with per-surface scanout
-  feedback, presentation-time, viewporter, xdg-output.
+  feedback, presentation-time, viewporter, xdg-output, and xdg popups, so a
+  web app's `<select>` dropdowns and context menus show above it, kept on the
+  screen. They close when their app leaves the screen.
 - Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
   Ctrl+Alt+H (go Home, standing in for the Steam button). Every other key goes
   to the foreground client, except on Home itself, where arrows move the focus

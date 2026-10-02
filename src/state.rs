@@ -5,7 +5,10 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
     delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
     delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{Space, Window},
+    desktop::{
+        PopupKeyboardGrab, PopupKind, PopupManager, PopupUngrabStrategy, Space, Window,
+        find_popup_root_surface, get_popup_toplevel_coords,
+    },
     input::{Seat, SeatHandler, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     reexports::{
         calloop::{
@@ -21,7 +24,7 @@ use smithay::{
             protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Clock, Monotonic, SERIAL_COUNTER, Serial},
+    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial, Size},
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
@@ -63,6 +66,9 @@ pub struct Emrakul {
     /// most recently is it. Closing it brings back the one before.
     pub toplevels: Vec<Window>,
     pub space: Space<Window>,
+    /// Menus and `<select>` dropdowns. Drawn above the toplevel they belong
+    /// to, and only while that toplevel is the foreground.
+    pub popups: PopupManager,
 
     pub session: Session,
     pub recency: Recency,
@@ -106,6 +112,7 @@ impl Emrakul {
             space: Space::default(),
             session: Session::Home(Home::default()),
             recency: Recency::load(Recency::default_path()?)?,
+            popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
             shm_state: ShmState::new::<Self>(&dh, vec![]),
@@ -159,14 +166,24 @@ impl Emrakul {
     /// keyboard. The single place the foreground changes. While an app is
     /// ending, Home is already on screen, so nothing is mapped.
     pub fn restack(&mut self) {
-        for window in self.space.elements().cloned().collect::<Vec<_>>() {
-            self.space.unmap_elem(&window);
-        }
-        let serial = SERIAL_COUNTER.next_serial();
         let foreground = match self.session {
             Session::Ending(_) => None,
             Session::Home(_) | Session::Running(_) => self.toplevels.last().cloned(),
         };
+        for window in self.space.elements().cloned().collect::<Vec<_>>() {
+            self.space.unmap_elem(&window);
+            // A menu left open on an app that just lost the screen would come
+            // back with it, stale.
+            if Some(&window) != foreground.as_ref()
+                && let Some(toplevel) = window.toplevel()
+            {
+                let root = toplevel.wl_surface();
+                for (popup, _) in PopupManager::popups_for_surface(root) {
+                    let _ = PopupManager::dismiss_popup(root, &popup);
+                }
+            }
+        }
+        let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = &foreground {
             self.space.map_element(window.clone(), (0, 0), true);
         }
@@ -175,9 +192,22 @@ impl Emrakul {
             .and_then(|w| w.toplevel())
             .map(|t| t.wl_surface().clone());
         if let Some(keyboard) = self.seat.get_keyboard() {
+            // A popup grab ignores focus changes until its popups are gone,
+            // and the foreground changing is more important than any menu.
+            keyboard.unset_grab(self);
             keyboard.set_focus(self, focus, serial);
         }
         self.backend.request_redraw(&self.loop_handle);
+    }
+
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let Some(output) = self.backend.output_size() else {
+            return;
+        };
+        let offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        popup.with_pending_state(|state| {
+            state.geometry = unconstrained_popup_geometry(&state.positioner, output, offset);
+        });
     }
 
     fn fullscreen(&self, toplevel: &ToplevelSurface) {
@@ -240,6 +270,15 @@ impl CompositorHandler for Emrakul {
             if !initial_configure_sent {
                 toplevel.send_configure();
             }
+        }
+
+        self.popups.commit(surface);
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
+            && !popup.is_initial_configure_sent()
+        {
+            tracing::debug!(geometry = ?popup.with_pending_state(|s| s.geometry), "popup configured");
+            // Only fails for a popup whose parent is already gone.
+            let _ = popup.send_configure();
         }
 
         self.backend.request_redraw(&self.loop_handle);
@@ -315,18 +354,53 @@ impl XdgShellHandler for Emrakul {
         surface.send_pending_configure();
     }
 
-    // Popups (menus, tooltips) aren't part of the couch UI. Leaving them
-    // unconfigured means clients never get to map them.
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
-
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        self.unconstrain_popup(&surface);
+        if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+            tracing::warn!(?err, "tracking a popup");
+        }
+    }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        surface.with_pending_state(|state| state.positioner = positioner);
+        self.unconstrain_popup(&surface);
+        surface.send_repositioned(token);
+    }
+
+    // The keyboard follows the topmost popup until the client closes it, so
+    // the controller's arrows walk a dropdown and Escape dismisses it.
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+        let Ok(mut grab) = self.popups.grab_popup(root, popup, &seat, serial) else {
+            tracing::debug!("popup grab denied");
+            return;
+        };
+        let Some(keyboard) = seat.get_keyboard() else {
+            return;
+        };
+        // Another grab already holds the keyboard and this popup isn't part
+        // of it: it doesn't get to steal input.
+        if keyboard.is_grabbed()
+            && !(keyboard.has_grab(serial)
+                || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+        {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
+        tracing::debug!("popup grabbed the keyboard");
+        keyboard.set_focus(self, grab.current_grab(), serial);
+        keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
     }
 }
 
@@ -405,4 +479,74 @@ fn toplevel_app_id(toplevel: &ToplevelSurface) -> Option<String> {
             .app_id
             .clone()
     })
+}
+
+/// Where a popup goes once it is kept on the output. `offset` is the popup's
+/// parent's position in toplevel coordinates (non-zero for a submenu), since
+/// the positioner works in the parent's coordinates.
+fn unconstrained_popup_geometry(
+    positioner: &PositionerState,
+    output: Size<i32, Logical>,
+    offset: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    positioner.get_unconstrained_geometry(Rectangle::new(Point::default() - offset, output))
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::{
+        Anchor, ConstraintAdjustment, Gravity,
+    };
+
+    use super::*;
+
+    #[test]
+    fn dropdown_near_the_bottom_flips_above_its_select() {
+        let dropdown = PositionerState {
+            rect_size: (200, 300).into(),
+            anchor_rect: Rectangle::new((100, 2000).into(), (150, 30).into()),
+            anchor_edges: Anchor::BottomLeft,
+            gravity: Gravity::BottomRight,
+            constraint_adjustment: ConstraintAdjustment::FlipY | ConstraintAdjustment::SlideX,
+            ..Default::default()
+        };
+        assert_eq!(
+            unconstrained_popup_geometry(&dropdown, Size::new(3840, 2160), (0, 0).into()),
+            Rectangle::new((100, 1700).into(), (200, 300).into())
+        );
+    }
+
+    #[test]
+    fn submenu_at_the_right_edge_opens_to_the_left_of_its_menu() {
+        // A context menu at x=3600, 220 wide: its submenu would start at 3820
+        // and run 250 past the edge, so it flips to the menu's left side.
+        let submenu = PositionerState {
+            rect_size: (250, 100).into(),
+            anchor_rect: Rectangle::new((0, 40).into(), (220, 30).into()),
+            anchor_edges: Anchor::TopRight,
+            gravity: Gravity::BottomRight,
+            constraint_adjustment: ConstraintAdjustment::FlipX,
+            ..Default::default()
+        };
+        assert_eq!(
+            unconstrained_popup_geometry(&submenu, Size::new(3840, 2160), (3600, 100).into()),
+            Rectangle::new((-250, 40).into(), (250, 100).into())
+        );
+    }
+
+    #[test]
+    fn popup_that_fits_stays_where_the_client_asked() {
+        let menu = PositionerState {
+            rect_size: (220, 400).into(),
+            anchor_rect: Rectangle::new((500, 500).into(), (1, 1).into()),
+            anchor_edges: Anchor::BottomRight,
+            gravity: Gravity::BottomRight,
+            constraint_adjustment: ConstraintAdjustment::all(),
+            ..Default::default()
+        };
+        assert_eq!(
+            unconstrained_popup_geometry(&menu, Size::new(3840, 2160), (0, 0).into()),
+            Rectangle::new((501, 501).into(), (220, 400).into())
+        );
+    }
 }
