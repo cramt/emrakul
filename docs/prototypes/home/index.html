@@ -1,0 +1,205 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Static mocks of Home for the "What does Home look like" ticket.
+  Open with ?v=ribbon|grid|list&state=recent|empty, or run ./render.sh for the 4K PNGs.
+  Laid out in CSS px at 1920x1080 and rendered at device scale 2, so the PNGs are 3840x2160
+  and sizes match what a scale-2 compositor would show on the TV.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>emrakul Home prototype</title>
+<script src="ganymede-apps.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #0d0f14; color: #e8eaf0;
+    font-family: "Iosevka Aile", "Inter", "Noto Sans", sans-serif; }
+  .tile-icon { display: flex; align-items: center; justify-content: center; background: #1c2029; border-radius: 18px; overflow: hidden; position: relative; }
+  .tile-icon img.icon { width: 56%; height: 56%; object-fit: contain; }
+  .tile-icon img.art { width: 100%; height: 100%; object-fit: cover; }
+  .mono { font-size: 64px; font-weight: 700; color: #8a93a8; }
+  .focus { outline: 6px solid #fff; outline-offset: 6px; box-shadow: 0 18px 50px rgba(0,0,0,.7); }
+  .kind { font-size: 22px; color: #9aa3b5; letter-spacing: .08em; text-transform: uppercase; }
+  .debug { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: #ffd400; color: #111;
+    font: 600 15px/34px monospace; padding: 0 16px; white-space: nowrap; overflow: hidden; z-index: 10; }
+  .tag { position: absolute; top: 8px; right: 8px; background: #ffd400; color: #111; font: 700 12px monospace; padding: 2px 6px; border-radius: 4px; }
+  .hint { color: #9aa3b5; font-size: 22px; }
+
+  /* A: webOS ribbon */
+  .ribbon-bg { position: absolute; inset: 0; background-size: cover; background-position: center; }
+  .ribbon-bg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, #0d0f14 32%, rgba(13,15,20,.55) 60%, rgba(13,15,20,.2)); }
+  .ribbon-hero { position: absolute; left: 96px; top: 300px; z-index: 2; }
+  .ribbon-hero h1 { font-size: 96px; font-weight: 800; }
+  .ribbon-row { position: absolute; left: 96px; bottom: 120px; display: flex; gap: 28px; align-items: flex-end; z-index: 2; }
+  .ribbon-row .tile-icon { width: 220px; height: 220px; flex: none; }
+  .ribbon-row .tile-icon.focus { width: 280px; height: 280px; }
+  .ribbon-label { position: absolute; bottom: 70px; z-index: 2; font-size: 26px; }
+
+  /* B: SteamOS grid */
+  .grid-wrap { position: absolute; inset: 0; padding: 72px 96px; }
+  .grid-wrap h2 { font-size: 30px; font-weight: 600; color: #c3c9d6; margin: 0 0 22px; }
+  .shelf { display: flex; gap: 30px; margin-bottom: 56px; }
+  .shelf .tile-icon { width: 240px; height: 360px; flex: none; }
+  .shelf .tile-icon.focus { width: 270px; height: 405px; }
+  .shelf .tile-icon .name { position: absolute; bottom: 0; left: 0; right: 0; padding: 12px; font-size: 22px; background: linear-gradient(transparent, rgba(0,0,0,.85)); }
+  .allgrid { display: grid; grid-template-columns: repeat(10, 150px); gap: 22px 26px; }
+  .allgrid .cell { text-align: center; font-size: 16px; color: #b7bfcc; }
+  .allgrid .tile-icon { width: 150px; height: 150px; margin-bottom: 8px; }
+  .allgrid .tile-icon .mono { font-size: 48px; }
+
+  /* C: vertical list + preview */
+  .list-col { position: absolute; left: 96px; top: 96px; bottom: 60px; width: 720px; overflow: hidden; }
+  .list-row { display: flex; align-items: center; gap: 24px; height: 84px; padding: 0 20px; border-radius: 14px; font-size: 34px; color: #c3c9d6; }
+  .list-row .tile-icon { width: 60px; height: 60px; border-radius: 12px; flex: none; }
+  .list-row .tile-icon .mono { font-size: 30px; }
+  .list-row.focus { background: #e8eaf0; color: #0d0f14; outline: none; box-shadow: none; font-weight: 700; }
+  .list-row .when { margin-left: auto; font-size: 20px; color: #7d8699; }
+  .list-row.focus .when { color: #3a4050; }
+  .list-sep { font-size: 20px; color: #6d7588; letter-spacing: .1em; text-transform: uppercase; margin: 22px 20px 8px; }
+  .preview { position: absolute; left: 900px; top: 96px; right: 96px; bottom: 96px; border-radius: 28px; overflow: hidden; background: #161a22; }
+  .preview .big { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .preview .cap { position: absolute; left: 48px; bottom: 48px; }
+  .preview .cap h1 { font-size: 72px; font-weight: 800; text-shadow: 0 4px 30px #000; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const q = new URLSearchParams(location.search);
+const V = q.get("v") || "ribbon";
+const STATE = q.get("state") || "recent";
+
+// emrakul won't be KDE, so OnlyShowIn=KDE entries vanish once Home honours it.
+const installed = GANYMEDE_APPS.filter(a => !a.onlyshowin || a.onlyshowin.split(";").includes("emrakul"));
+const droppedKde = GANYMEDE_APPS.length - installed.length;
+
+// Not installed on ganymede yet: stand-ins for the web apps and games nixconf will declare.
+const planned = [
+  { id: "hades2", name: "Hades II", kind: "game", art: "1145350" },
+  { id: "youtube", name: "YouTube", kind: "web", icon: "art/youtube.svg", brand: "#ffffff" },
+  { id: "jellyfin", name: "Jellyfin", kind: "web", icon: "art/jellyfin.svg", brand: "#101a2a" },
+  { id: "balatro", name: "Balatro", kind: "game", art: "2379780" },
+  { id: "eldenring", name: "Elden Ring", kind: "game", art: "1245620" },
+  { id: "silksong", name: "Hollow Knight: Silksong", kind: "game", art: "1030300" },
+].map(a => ({ ...a, planned: true }));
+
+const iconFiles = ["ark.svg","btop.svg","elisa.svg","firefox.png","gwenview.png","help-browser.svg","hwinfo.svg","kate.svg","kdeconnect.svg","kmenuedit.png","kwalletmanager.png","kwrite.svg","moonlight.svg","neovide.svg","nix-snowflake.svg","nvidia-settings.png","nvim.png","okular.png","org.kde.dolphin.svg","org.kde.qrca.svg","plasmadiscover.svg","preferences-desktop-emoticons.svg","preferences-system.svg","spectacle.svg","steam.png","tools-report-bug.svg","utilities-system-monitor.svg","utilities-terminal.svg","yazi.png"];
+const iconPath = name => { const f = iconFiles.find(f => f.replace(/\.(svg|png)$/, "") === name); return f ? "icons/" + f : null; };
+
+const all = [...planned, ...installed.map(a => ({ id: a.id, name: a.name, kind: "app", icon: iconPath(a.icon) }))];
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+// Recent state: every planned entry has been used, ordered as listed, everything else never used.
+const ago = ["just now", "2 h ago", "yesterday", "3 days ago", "last week", "3 weeks ago"];
+let used = [], unused;
+if (STATE === "recent") {
+  used = planned.map((a, i) => ({ ...a, when: ago[i] }));
+  unused = all.filter(a => !a.planned).sort(byName);
+} else {
+  unused = [...all].sort(byName);
+}
+const ordered = [...used, ...unused];
+const focusIdx = 0;
+
+const kindLabel = a => a.kind === "game" ? "Game · streamed from saturn" : a.kind === "web" ? "Web app" : "App · desktop entry";
+
+function tile(a, cls = "", mode = "square") {
+  const el = document.createElement("div");
+  el.className = "tile-icon " + cls;
+  if (a.kind === "game" && a.art) {
+    el.innerHTML = `<img class="art" src="art/${a.art}_${mode === "portrait" ? "capsule" : "hero"}.jpg">`;
+  } else if (a.icon) {
+    if (a.brand) el.style.background = a.brand;
+    el.innerHTML = `<img class="icon" src="${a.icon}">`;
+  } else {
+    el.innerHTML = `<span class="mono">${a.name[0].toUpperCase()}</span>`;
+  }
+  if (a.planned) el.insertAdjacentHTML("beforeend", `<span class="tag">PLANNED</span>`);
+  return el;
+}
+
+const root = document.getElementById("root");
+const debug = document.createElement("div");
+debug.className = "debug";
+debug.textContent = `PROTOTYPE v=${V} state=${STATE} | focus on open: #${focusIdx} "${ordered[focusIdx].name}" | ${GANYMEDE_APPS.length} visible desktop entries on ganymede, -${droppedKde} OnlyShowIn=KDE = ${installed.length} real + ${planned.length} PLANNED = ${ordered.length} apps | order: ${ordered.map(a => a.name).join(", ")}`;
+root.appendChild(debug);
+
+if (V === "ribbon") {
+  const f = ordered[focusIdx];
+  const bg = document.createElement("div");
+  bg.className = "ribbon-bg";
+  if (f.kind === "game") bg.style.backgroundImage = `url(art/${f.art}_hero.jpg)`;
+  else bg.style.background = "radial-gradient(ellipse at 30% 20%, #2a3550, #0d0f14 70%)";
+  root.appendChild(bg);
+  const hero = document.createElement("div");
+  hero.className = "ribbon-hero";
+  hero.innerHTML = `<div class="kind">${kindLabel(f)}${f.when ? " · " + f.when : ""}</div><h1>${f.name}</h1>` +
+    (STATE === "empty" ? `<p class="hint" style="margin-top:18px">Nothing launched yet, so everything is A to Z.</p>` : "");
+  root.appendChild(hero);
+  const row = document.createElement("div");
+  row.className = "ribbon-row";
+  ordered.slice(0, 7).forEach((a, i) => row.appendChild(tile(a, i === focusIdx ? "focus" : "")));
+  const more = document.createElement("div");
+  more.className = "tile-icon"; more.style.cssText = "width:160px;height:220px;flex:none;background:transparent;border:2px dashed #3a4152";
+  more.innerHTML = `<span class="hint">+${ordered.length - 7} more →</span>`;
+  row.appendChild(more);
+  root.appendChild(row);
+}
+
+if (V === "grid") {
+  const w = document.createElement("div");
+  w.className = "grid-wrap";
+  const shelfItems = STATE === "recent" ? used : [];
+  if (shelfItems.length) {
+    w.insertAdjacentHTML("beforeend", `<h2>Recent</h2>`);
+    const shelf = document.createElement("div");
+    shelf.className = "shelf";
+    shelfItems.forEach((a, i) => {
+      const t = tile(a, i === focusIdx ? "focus" : "", "portrait");
+      t.insertAdjacentHTML("beforeend", `<div class="name">${a.name}<br><span class="hint" style="font-size:16px">${a.when}</span></div>`);
+      shelf.appendChild(t);
+    });
+    w.appendChild(shelf);
+  }
+  w.insertAdjacentHTML("beforeend", `<h2>${shelfItems.length ? "Everything else" : "All apps · nothing launched yet, A to Z"}</h2>`);
+  const g = document.createElement("div");
+  g.className = "allgrid";
+  const rest = shelfItems.length ? unused : ordered;
+  rest.slice(0, shelfItems.length ? 20 : 40).forEach((a, i) => {
+    const c = document.createElement("div");
+    c.className = "cell";
+    c.appendChild(tile(a, !shelfItems.length && i === focusIdx ? "focus" : "", "square"));
+    c.insertAdjacentHTML("beforeend", `<div>${a.name}</div>`);
+    g.appendChild(c);
+  });
+  w.appendChild(g);
+  root.appendChild(w);
+}
+
+if (V === "list") {
+  const col = document.createElement("div");
+  col.className = "list-col";
+  const add = (a, i) => {
+    const r = document.createElement("div");
+    r.className = "list-row" + (i === focusIdx ? " focus" : "");
+    r.appendChild(tile(a, "", "square"));
+    r.insertAdjacentHTML("beforeend", `<span>${a.name}</span>${a.when ? `<span class="when">${a.when}</span>` : ""}`);
+    col.appendChild(r);
+  };
+  if (used.length) col.insertAdjacentHTML("beforeend", `<div class="list-sep">Recent</div>`);
+  ordered.forEach((a, i) => {
+    if (i === used.length) col.insertAdjacentHTML("beforeend", `<div class="list-sep">${used.length ? "Never opened" : "Nothing launched yet · A to Z"}</div>`);
+    add(a, i);
+  });
+  root.appendChild(col);
+  const f = ordered[focusIdx];
+  const p = document.createElement("div");
+  p.className = "preview";
+  if (f.kind === "game") p.innerHTML = `<img class="big" style="width:100%;height:100%;object-fit:cover" src="art/${f.art}_hero.jpg">`;
+  else { const t = tile(f); t.style.cssText = "width:360px;height:360px;position:absolute;left:50%;top:42%;transform:translate(-50%,-50%)"; p.appendChild(t); }
+  p.insertAdjacentHTML("beforeend", `<div class="cap"><div class="kind">${kindLabel(f)}${f.when ? " · " + f.when : ""}</div><h1>${f.name}</h1></div>`);
+  root.appendChild(p);
+}
+</script>
+</body>
+</html>
