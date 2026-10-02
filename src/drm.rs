@@ -259,6 +259,26 @@ impl Backend {
         }
     }
 
+    /// DPMS off. The TV shows No Signal, and may power itself down.
+    pub fn blank(&mut self) {
+        let Some(screen) = &self.screen else {
+            return;
+        };
+        if let Err(err) = screen.drm_output.with_compositor(|c| c.clear()) {
+            tracing::warn!(?err, "switching the screen off");
+        }
+        // Whatever was in flight was dropped with the frame queue.
+        self.redraw = Redraw::Idle;
+    }
+
+    /// Undoes [`Backend::blank`]: the next queued frame switches the screen
+    /// back on, and it has to be a full one, as the screen kept nothing.
+    pub fn wake(&mut self) {
+        if let Some(screen) = &self.screen {
+            screen.drm_output.reset_buffers();
+        }
+    }
+
     pub fn request_redraw(&mut self, loop_handle: &LoopHandle<'static, Emrakul>) {
         tracing::trace!(redraw = ?self.redraw, "redraw requested");
         match self.redraw {
@@ -482,8 +502,16 @@ impl Emrakul {
             backend,
             space,
             clock,
+            idle,
             ..
         } = self;
+        // Queueing a frame would switch the screen back on. Clients get no
+        // frame callbacks either, so they stop drawing for a screen that
+        // isn't there.
+        if idle.is_blanked() {
+            backend.redraw = Redraw::Idle;
+            return;
+        }
         let Some(screen) = backend.screen.as_mut() else {
             backend.redraw = Redraw::Idle;
             return;
@@ -668,6 +696,8 @@ impl Emrakul {
                 if let Err(err) = self.backend.outputs.lock().activate(false) {
                     tracing::error!(?err, "reactivating DRM");
                 }
+                // Switching back to this VT is someone at the TV.
+                self.on_activity();
                 // Whatever was in flight died with the pause.
                 self.backend.redraw = Redraw::Idle;
                 self.backend.request_redraw(&self.loop_handle);

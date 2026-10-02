@@ -17,7 +17,7 @@ use smithay::reexports::{
     udev,
 };
 
-use crate::{lifecycle::HomeKey, state::Emrakul};
+use crate::{idle::Activity, lifecycle::HomeKey, state::Emrakul};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadAction {
@@ -30,6 +30,9 @@ pub enum PadAction {
 const PUSH: f32 = 0.5;
 /// How far back it must come before the next push counts.
 const RECENTRE: f32 = 0.25;
+/// How far a stick must lean, or a trigger be pulled, to count as activity:
+/// far enough that drift at rest never holds the screen on.
+const ACTIVE: f32 = 0.25;
 
 /// One controller's view of the stand-in mapping. Sticks only step the focus
 /// on the way out past [`PUSH`], so holding one steps once.
@@ -37,6 +40,9 @@ const RECENTRE: f32 = 0.25;
 pub struct Pad {
     x: Axis,
     y: Axis,
+    /// Every absolute axis the controller reports, for telling activity
+    /// from drift.
+    ranges: Vec<(AbsoluteAxisCode, AxisRange)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,12 +68,7 @@ impl Axis {
     /// The focus step this value makes, if it is a fresh push. Negative
     /// (left, or up: evdev's Y grows downwards) is Previous.
     fn step(&mut self, value: i32) -> Option<HomeKey> {
-        let AxisRange { min, max } = self.range;
-        let half = (max - min) as f32 / 2.0;
-        if half <= 0.0 {
-            return None;
-        }
-        let lean = (value as f32 - (min as f32 + half)) / half;
+        let lean = self.range.lean(value);
         if self.pushed {
             self.pushed = lean.abs() > RECENTRE;
             return None;
@@ -84,11 +85,64 @@ impl Axis {
     }
 }
 
+fn range_of(ranges: &[(AbsoluteAxisCode, AxisRange)], code: AbsoluteAxisCode) -> Option<AxisRange> {
+    ranges.iter().find(|(c, _)| *c == code).map(|(_, r)| *r)
+}
+
+impl AxisRange {
+    /// How far `value` is from the middle, as a fraction of the half-range.
+    fn lean(self, value: i32) -> f32 {
+        let half = (self.max - self.min) as f32 / 2.0;
+        if half <= 0.0 {
+            return 0.0;
+        }
+        (value as f32 - (self.min as f32 + half)) / half
+    }
+
+    /// How far `value` is from the minimum, as a fraction of the range.
+    fn pull(self, value: i32) -> f32 {
+        let range = (self.max - self.min) as f32;
+        if range <= 0.0 {
+            return 0.0;
+        }
+        (value - self.min) as f32 / range
+    }
+}
+
 impl Pad {
-    pub fn new(x: AxisRange, y: AxisRange) -> Self {
+    pub fn new(ranges: &[(AbsoluteAxisCode, AxisRange)]) -> Self {
+        let range = |code| range_of(ranges, code).unwrap_or(AxisRange { min: 0, max: 0 });
         Self {
-            x: Axis::new(x),
-            y: Axis::new(y),
+            x: Axis::new(range(AbsoluteAxisCode::ABS_X)),
+            y: Axis::new(range(AbsoluteAxisCode::ABS_Y)),
+            ranges: ranges.to_vec(),
+        }
+    }
+
+    /// Whether this event is someone at the controller, per Idle: a button
+    /// press, a stick past its deadzone, a trigger pulled, or a trackpad
+    /// touch. Gyro is on another node, which is never opened.
+    pub fn is_activity(&self, event: &InputEvent) -> bool {
+        use AbsoluteAxisCode as A;
+        let (code, value) = match event.destructure() {
+            EventSummary::Key(_, _, value) => return value != 0,
+            EventSummary::AbsoluteAxis(_, code, value) => (code, value),
+            _ => return false,
+        };
+        let range = || range_of(&self.ranges, code);
+        match code {
+            // The Steam Controller's trackpads, which say nothing until
+            // touched. On other pads these are the D-pad, equally quiet.
+            A::ABS_HAT0X | A::ABS_HAT0Y | A::ABS_HAT1X | A::ABS_HAT1Y => true,
+            A::ABS_X | A::ABS_Y | A::ABS_RX | A::ABS_RY => {
+                range().is_some_and(|r| r.lean(value).abs() > ACTIVE)
+            }
+            // Analog triggers: the Steam Controller's on HAT2, the usual
+            // gamepad's on Z/RZ. They rest at the minimum.
+            A::ABS_HAT2X | A::ABS_HAT2Y | A::ABS_Z | A::ABS_RZ => {
+                range().is_some_and(|r| r.pull(value) > ACTIVE)
+            }
+            _ => false,
         }
     }
 
@@ -224,20 +278,17 @@ impl Emrakul {
             self.backend.close_input(session_fd);
             return Ok(());
         }
-        let range = |code| {
-            device
-                .get_absinfo()
-                .ok()
-                .and_then(|mut axes| axes.find(|(c, _)| *c == code))
-                .map_or(AxisRange { min: 0, max: 0 }, |(_, info)| AxisRange {
-                    min: info.minimum(),
-                    max: info.maximum(),
+        let ranges: Vec<_> = device
+            .get_absinfo()
+            .map(|axes| {
+                axes.map(|(code, info)| {
+                    let (min, max) = (info.minimum(), info.maximum());
+                    (code, AxisRange { min, max })
                 })
-        };
-        let pad = Pad::new(
-            range(AbsoluteAxisCode::ABS_X),
-            range(AbsoluteAxisCode::ABS_Y),
-        );
+                .collect()
+            })
+            .unwrap_or_default();
+        let pad = Pad::new(&ranges);
         let watched = node.to_owned();
         let source = self
             .loop_handle
@@ -257,6 +308,8 @@ impl Emrakul {
             pad,
             source,
         });
+        // Switching the controller on is the natural "I'm back".
+        self.on_activity();
         Ok(())
     }
 
@@ -298,7 +351,14 @@ impl Emrakul {
             let Some(gamepad) = self.gamepads.0.iter_mut().find(|g| g.node == node) else {
                 return;
             };
-            match gamepad.pad.on_event(event, on_home) {
+            let active = gamepad.pad.is_activity(&event);
+            // Read even when it's about to be swallowed, so a stick push
+            // that wakes the screen doesn't step the focus once it's back.
+            let action = gamepad.pad.on_event(event, on_home);
+            if active && self.on_activity() == Activity::Woke {
+                continue;
+            }
+            match action {
                 Some(PadAction::GoHome) => self.go_home(),
                 Some(PadAction::Home(key)) => self.on_home_key(key),
                 None => {}
@@ -319,7 +379,10 @@ mod tests {
     };
 
     fn pad() -> Pad {
-        Pad::new(STEAM_STICK, STEAM_STICK)
+        Pad::new(&[
+            (AbsoluteAxisCode::ABS_X, STEAM_STICK),
+            (AbsoluteAxisCode::ABS_Y, STEAM_STICK),
+        ])
     }
 
     fn key(code: KeyCode, value: i32) -> InputEvent {
@@ -437,12 +500,84 @@ mod tests {
 
     #[test]
     fn unsigned_ranges_centre_on_their_midpoint() {
-        let mut pad = Pad::new(AxisRange { min: 0, max: 255 }, STEAM_STICK);
+        let mut pad = Pad::new(&[(AbsoluteAxisCode::ABS_X, AxisRange { min: 0, max: 255 })]);
         let x = |v| abs(AbsoluteAxisCode::ABS_X, v);
         assert_eq!(pad.on_event(x(128), true), None);
         assert_eq!(
             pad.on_event(x(250), true),
             Some(PadAction::Home(HomeKey::Next))
         );
+    }
+    const TRIGGER: AxisRange = AxisRange { min: 0, max: 32767 };
+
+    fn steam_controller() -> Pad {
+        use AbsoluteAxisCode as A;
+        Pad::new(&[
+            (A::ABS_X, STEAM_STICK),
+            (A::ABS_Y, STEAM_STICK),
+            (A::ABS_RX, STEAM_STICK),
+            (A::ABS_RY, STEAM_STICK),
+            (A::ABS_HAT0X, STEAM_STICK),
+            (A::ABS_HAT0Y, STEAM_STICK),
+            (A::ABS_HAT1X, STEAM_STICK),
+            (A::ABS_HAT1Y, STEAM_STICK),
+            (A::ABS_HAT2X, TRIGGER),
+            (A::ABS_HAT2Y, TRIGGER),
+        ])
+    }
+
+    #[test]
+    fn every_button_press_is_activity() {
+        let pad = steam_controller();
+        for code in [
+            KeyCode::BTN_SOUTH,
+            KeyCode::BTN_MODE,
+            KeyCode::BTN_TL2,
+            KeyCode::BTN_THUMB,
+            KeyCode::BTN_DPAD_LEFT,
+            KeyCode(548), // a back grip
+        ] {
+            assert!(pad.is_activity(&key(code, 1)), "{code:?}");
+        }
+        assert!(!pad.is_activity(&key(KeyCode::BTN_SOUTH, 0)));
+    }
+
+    #[test]
+    fn sticks_at_rest_are_not_activity_but_a_push_is() {
+        let pad = steam_controller();
+        for code in [
+            AbsoluteAxisCode::ABS_X,
+            AbsoluteAxisCode::ABS_Y,
+            AbsoluteAxisCode::ABS_RX,
+            AbsoluteAxisCode::ABS_RY,
+        ] {
+            for drift in [-500, 0, 480, -2000] {
+                assert!(!pad.is_activity(&abs(code, drift)), "{code:?} at {drift}");
+            }
+            assert!(pad.is_activity(&abs(code, 12000)), "{code:?}");
+            assert!(pad.is_activity(&abs(code, -12000)), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn a_trigger_counts_once_pulled_past_its_deadzone() {
+        let pad = steam_controller();
+        assert!(!pad.is_activity(&abs(AbsoluteAxisCode::ABS_HAT2X, 0)));
+        assert!(!pad.is_activity(&abs(AbsoluteAxisCode::ABS_HAT2Y, 1500)));
+        assert!(pad.is_activity(&abs(AbsoluteAxisCode::ABS_HAT2Y, 12000)));
+    }
+
+    #[test]
+    fn any_trackpad_touch_is_activity() {
+        let pad = steam_controller();
+        assert!(pad.is_activity(&abs(AbsoluteAxisCode::ABS_HAT0X, 3)));
+        assert!(pad.is_activity(&abs(AbsoluteAxisCode::ABS_HAT1Y, -200)));
+    }
+
+    #[test]
+    fn sync_and_unknown_axes_are_not_activity() {
+        let pad = steam_controller();
+        assert!(!pad.is_activity(&InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0)));
+        assert!(!pad.is_activity(&abs(AbsoluteAxisCode::ABS_PRESSURE, 9000)));
     }
 }

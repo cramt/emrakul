@@ -59,6 +59,15 @@ in {
             example = ["foot"];
             description = "Command started once the compositor is up.";
           };
+          idle_timeout = lib.mkOption {
+            type = lib.types.nullOr lib.types.ints.positive;
+            default = null;
+            example = 600;
+            description = ''
+              Seconds without activity before the screen blanks (DPMS off).
+              Unset is 10 minutes.
+            '';
+          };
         };
       };
     };

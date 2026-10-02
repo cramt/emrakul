@@ -45,6 +45,19 @@ What it does today:
   from anywhere. On Home, a stand-in mapping until the full controller table
   is decided: D-pad, or the left stick pushed past half way, moves the focus,
   and A launches. Over an app, only the Steam button does anything so far.
+- Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
+  minutes unless configured. The TV shows No Signal and may power itself
+  down. Activity is a controller button, a stick past a quarter of its
+  travel, a trigger pulled a quarter of the way, a trackpad touch, a
+  controller connecting, or a key press. The input that wakes the screen
+  does nothing else, so a press you couldn't see launches nothing. A client
+  holding `zwp_idle_inhibit` (Chromium while a video plays) holds blanking
+  off. The countdown restarts when the last inhibitor goes, and a client that
+  dies holding one releases it. While blank, clients get no frame callbacks.
+  Games don't hold the screen on: their Moonlight must run with
+  `--no-keep-awake`, which never asks for an inhibit. Moonlight reads the
+  controller itself, so a press that wakes the screen during a Game still
+  reaches the game.
 
 Next: Home drawn for real: names, icons and focus.
 
@@ -57,6 +70,8 @@ connector = "HDMI-A-1"
 mode = "3840x2160@60"   # optional; omitted = the display's preferred mode
 launch = ["foot"]       # optional; started once the compositor is up, outside
                         # the app lifecycle (a test hook)
+idle_timeout = 600      # optional; seconds without activity before the
+                        # screen blanks, default 600
 ```
 
 Run it with `emrakul --config config.toml` inside a logind session that owns

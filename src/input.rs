@@ -7,7 +7,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 
-use crate::{lifecycle::HomeKey, state::Emrakul};
+use crate::{idle::Activity, lifecycle::HomeKey, state::Emrakul};
 
 /// Keys the compositor keeps for itself. Everything else goes to the
 /// foreground client.
@@ -57,13 +57,23 @@ impl Emrakul {
             return;
         };
         let pressed = event.state() == KeyState::Pressed;
+        let code = event.key_code();
+        let woke = pressed && self.on_activity() == Activity::Woke;
         let action = keyboard.input(
             self,
-            event.key_code(),
+            code,
             event.state(),
             SERIAL_COUNTER.next_serial(),
             Event::time_msec(&event),
             |state, modifiers, handle| {
+                if woke {
+                    state.waking_key = Some(code);
+                    return FilterResult::Intercept(None);
+                }
+                if !pressed && state.waking_key == Some(code) {
+                    state.waking_key = None;
+                    return FilterResult::Intercept(None);
+                }
                 match reserved(modifiers, handle.modified_sym(), state.home_has_keyboard()) {
                     Some(action) if pressed => FilterResult::Intercept(Some(action)),
                     // Swallow the release too, or the client sees half a keypress.

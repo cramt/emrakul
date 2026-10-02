@@ -1,4 +1,4 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::on_commit_buffer_handler},
@@ -12,7 +12,8 @@ use smithay::{
     input::{Seat, SeatHandler, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     reexports::{
         calloop::{
-            Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, generic::Generic,
+            Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken,
+            generic::Generic,
         },
         wayland_protocols::xdg::{
             decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
@@ -29,6 +30,7 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        idle_inhibit::IdleInhibitManagerState,
         output::{OutputHandler, OutputManagerState},
         presentation::PresentationState,
         selection::{
@@ -50,6 +52,7 @@ use crate::{
     config::Config,
     drm::Backend,
     gamepad::Gamepads,
+    idle::Idle,
     lifecycle::{Home, Session},
     recency::Recency,
 };
@@ -74,6 +77,12 @@ pub struct Emrakul {
     pub session: Session,
     pub recency: Recency,
     pub gamepads: Gamepads,
+    pub idle: Idle<WlSurface>,
+    /// The pending Idle poll, if one is scheduled.
+    pub idle_timer: Option<RegistrationToken>,
+    /// The key that woke the screen. Its release is swallowed with it, or
+    /// the client would see half a keypress.
+    pub waking_key: Option<smithay::input::keyboard::Keycode>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -98,6 +107,7 @@ impl Emrakul {
     ) -> anyhow::Result<Self> {
         let dh = display.handle();
         let clock = Clock::new();
+        let idle = Idle::new(config.idle_timeout, Instant::now());
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, backend.seat_name());
@@ -115,6 +125,9 @@ impl Emrakul {
             session: Session::Home(Home::default()),
             recency: Recency::load(Recency::default_path()?)?,
             gamepads: Gamepads::default(),
+            idle,
+            idle_timer: None,
+            waking_key: None,
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
@@ -126,6 +139,7 @@ impl Emrakul {
                 _xdg_output: OutputManagerState::new_with_xdg_output::<Self>(&dh),
                 _presentation: PresentationState::new::<Self>(&dh, clock.id() as u32),
                 _viewporter: ViewporterState::new::<Self>(&dh),
+                _idle_inhibit: IdleInhibitManagerState::new::<Self>(&dh),
             },
             data_device_state: DataDeviceState::new::<Self>(&dh),
             seat_state,
@@ -230,6 +244,7 @@ pub struct Globals {
     _xdg_output: OutputManagerState,
     _presentation: PresentationState,
     _viewporter: ViewporterState,
+    _idle_inhibit: IdleInhibitManagerState,
 }
 
 #[derive(Default)]
@@ -285,6 +300,13 @@ impl CompositorHandler for Emrakul {
         }
 
         self.backend.request_redraw(&self.loop_handle);
+    }
+
+    // A client that dies holding an inhibitor never destroys it, so the
+    // surface going is what lets the screen blank after a killed web app.
+    fn destroyed(&mut self, surface: &WlSurface) {
+        self.idle.surface_gone(surface, Instant::now());
+        self.arm_idle_timer();
     }
 }
 

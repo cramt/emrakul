@@ -1,9 +1,11 @@
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
 use facet::Facet;
 
 use crate::apps::Argv;
+
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// config.toml as written. Only [`Config`] leaves this module.
 #[derive(Facet)]
@@ -13,6 +15,8 @@ struct RawConfig {
     mode: Option<String>,
     #[facet(default)]
     launch: Vec<String>,
+    /// Seconds.
+    idle_timeout: Option<u64>,
 }
 
 pub struct Config {
@@ -21,6 +25,8 @@ pub struct Config {
     /// `None` takes whatever the display marks as preferred.
     pub mode: Option<Mode>,
     pub launch: Option<Argv>,
+    /// How long without activity until the screen blanks.
+    pub idle_timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,11 +48,17 @@ impl Config {
     fn parse(text: &str) -> anyhow::Result<Self> {
         let raw: RawConfig = facet_toml::from_str(text).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mode = raw.mode.as_deref().map(str::parse).transpose()?;
+        let idle_timeout = match raw.idle_timeout {
+            None => DEFAULT_IDLE_TIMEOUT,
+            Some(0) => bail!("idle_timeout must be at least 1 second"),
+            Some(secs) => Duration::from_secs(secs),
+        };
         Ok(Self {
             device: raw.device.into(),
             connector: raw.connector,
             mode,
             launch: Argv::from_vec(raw.launch),
+            idle_timeout,
         })
     }
 }
@@ -89,6 +101,7 @@ mod tests {
             connector = "HDMI-A-1"
             mode = "3840x2160@60"
             launch = ["foot", "--fullscreen"]
+            idle_timeout = 30
             "#,
         )
         .unwrap();
@@ -104,6 +117,7 @@ mod tests {
         let launch = config.launch.unwrap();
         assert_eq!(launch.program, "foot");
         assert_eq!(launch.args, ["--fullscreen"]);
+        assert_eq!(config.idle_timeout, Duration::from_secs(30));
     }
 
     #[test]
@@ -117,6 +131,19 @@ mod tests {
         .unwrap();
         assert!(config.mode.is_none());
         assert!(config.launch.is_none());
+        assert_eq!(config.idle_timeout, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn a_zero_idle_timeout_is_refused() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+            idle_timeout = 0
+            "#,
+        );
+        assert!(config.is_err());
     }
 
     #[test]
