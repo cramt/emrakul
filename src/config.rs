@@ -1,9 +1,12 @@
-use std::{fmt, path::PathBuf, str::FromStr, time::Duration};
+use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
 use facet::Facet;
 
-use crate::apps::Argv;
+use crate::{
+    apps::Argv,
+    tv::{Layers, LinkConfig, Setting, SettingValue, Settings, TvConfig},
+};
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -17,7 +20,29 @@ struct RawConfig {
     launch: Vec<String>,
     /// Seconds.
     idle_timeout: Option<u64>,
+    tv: Option<RawTv>,
 }
+
+/// `[tv]`. Settings are `[tv.settings.<category>]`, `[tv.home.<category>]`,
+/// `[tv.app.<category>]` and `[tv.profiles.<name>.<category>]`.
+#[derive(Facet)]
+struct RawTv {
+    host: String,
+    key_file: String,
+    cert_fingerprint: String,
+    input: String,
+    #[facet(default)]
+    settings: RawSettings,
+    #[facet(default)]
+    home: RawSettings,
+    #[facet(default)]
+    app: RawSettings,
+    #[facet(default)]
+    profiles: HashMap<String, RawSettings>,
+}
+
+/// Category, then key.
+type RawSettings = HashMap<String, HashMap<String, SettingValue>>;
 
 pub struct Config {
     pub device: PathBuf,
@@ -27,6 +52,8 @@ pub struct Config {
     pub launch: Option<Argv>,
     /// How long without activity until the screen blanks.
     pub idle_timeout: Duration,
+    /// `None` leaves the TV's own settings alone.
+    pub tv: Option<TvConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +86,43 @@ impl Config {
             mode,
             launch: Argv::from_vec(raw.launch),
             idle_timeout,
+            tv: raw.tv.map(RawTv::parse).transpose()?,
+        })
+    }
+}
+
+impl RawTv {
+    fn parse(self) -> anyhow::Result<TvConfig> {
+        let flatten = |raw: RawSettings| -> Settings {
+            raw.into_iter()
+                .flat_map(|(category, keys)| {
+                    keys.into_iter().map(move |(key, value)| {
+                        let category = category.clone();
+                        (Setting { category, key }, value)
+                    })
+                })
+                .collect()
+        };
+        Ok(TvConfig {
+            link: LinkConfig {
+                cert_fingerprint: self
+                    .cert_fingerprint
+                    .parse()
+                    .context("tv.cert_fingerprint")?,
+                host: self.host,
+                key_file: self.key_file.into(),
+                input: self.input,
+            },
+            layers: Layers {
+                always: flatten(self.settings),
+                home: flatten(self.home),
+                app: flatten(self.app),
+                profiles: self
+                    .profiles
+                    .into_iter()
+                    .map(|(name, raw)| (name, flatten(raw)))
+                    .collect(),
+            },
         })
     }
 }
@@ -132,6 +196,7 @@ mod tests {
         assert!(config.mode.is_none());
         assert!(config.launch.is_none());
         assert_eq!(config.idle_timeout, Duration::from_secs(600));
+        assert!(config.tv.is_none());
     }
 
     #[test]
@@ -141,6 +206,73 @@ mod tests {
             device = "/dev/dri/card0"
             connector = "HDMI-A-1"
             idle_timeout = 0
+            "#,
+        );
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn tv_settings_layer_by_section() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+
+            [tv]
+            host = "192.168.178.36"
+            key_file = "/run/secrets/tv-key"
+            cert_fingerprint = "11:C5:B1:C5:90:77:50:AB:B9:DA:2A:66:65:CC:CE:2B:B2:88:A5:83:F4:5A:33:39:E7:1F:87:BF:2F:80:85:52"
+            input = "HDMI_1"
+
+            [tv.settings.aspectRatio]
+            justScan = "on"
+
+            [tv.app.picture]
+            pictureMode = "filmMaker"
+            backlight = 80
+
+            [tv.profiles.game.picture]
+            pictureMode = "game"
+            "#,
+        )
+        .unwrap();
+        let tv = config.tv.unwrap();
+        assert_eq!(tv.link.input, "HDMI_1");
+        let setting = |category: &str, key: &str| Setting {
+            category: category.into(),
+            key: key.into(),
+        };
+        let text = |s: &str| SettingValue::Text(s.into());
+        assert_eq!(
+            tv.layers.always,
+            Settings::from([(setting("aspectRatio", "justScan"), text("on"))])
+        );
+        assert!(tv.layers.home.is_empty());
+        assert_eq!(
+            tv.layers.app,
+            Settings::from([
+                (setting("picture", "pictureMode"), text("filmMaker")),
+                (setting("picture", "backlight"), SettingValue::Number(80)),
+            ])
+        );
+        assert_eq!(
+            tv.layers.profiles["game"],
+            Settings::from([(setting("picture", "pictureMode"), text("game"))])
+        );
+    }
+
+    #[test]
+    fn tv_needs_a_valid_fingerprint() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+
+            [tv]
+            host = "192.168.178.36"
+            key_file = "/run/secrets/tv-key"
+            cert_fingerprint = "11:C5"
+            input = "HDMI_1"
             "#,
         );
         assert!(config.is_err());

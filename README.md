@@ -106,6 +106,18 @@ What it does today:
   controller itself, so a press that wakes the screen during a Game still
   reaches the game.
 
+- Holds the TV's own settings (picture mode, Just Scan, energy saving) to
+  what is on screen, over the LG's network API (SSAP), when `[tv]` is
+  configured. Home, apps, and apps whose entry names a profile
+  (`X-Emrakul-Tv=game`) each get their own settings, layered over ones that
+  always hold. It reads each setting and only writes the ones that differ,
+  the picture mode first, since picture settings belong to a mode. It
+  checks again every 15 s, so a TV switched on later or changed with its
+  remote is put back. It touches nothing while the TV shows another input,
+  because the settings belong to whichever input is on screen. A setting
+  the TV refuses gets a warning, once. An off TV costs nothing: the TV is
+  talked to from a thread of its own.
+
 ganymede's cutover is in nixconf ([dd6eb8a](https://github.com/cramt/nixconf/commit/dd6eb8a)), waiting on a deploy:
 emrakul is its only session, and Home lists three web apps, YouTube,
 Nebula and Jellyfin, each Chromium with the VA-API flags below and its own
@@ -123,7 +135,32 @@ launch = ["foot"]       # optional; started once the compositor is up, outside
                         # the app lifecycle (a test hook)
 idle_timeout = 600      # optional; seconds without activity before the
                         # screen blanks, default 600
+
+# Optional. Without it the TV's settings are left alone.
+[tv]
+host = "192.168.178.36"
+key_file = "/run/secrets/tv-key"  # an SSAP client key; ganymede's was paired by bscpylgtv
+cert_fingerprint = "11:C5:B1:…"   # SHA-256 of the TV's cert; every connection is pinned to it
+input = "HDMI_1"                  # the TV input this machine is on
+
+[tv.settings.aspectRatio]        # always held
+justScan = "on"
+arcPerApp = "original"
+
+[tv.home.picture]                # on Home
+pictureMode = "filmMaker"
+
+[tv.app.picture]                 # in an app whose entry names no profile
+pictureMode = "filmMaker"
+
+[tv.profiles.game.picture]       # in an app with X-Emrakul-Tv=game
+pictureMode = "game"
 ```
+
+Settings are the TV's `settings/getSystemSettings` categories and keys.
+`tv get-setting picture pictureMode` and `tv set-setting …` from
+[webos-ssap](https://github.com/cramt/webos-ssap) are for finding values by
+hand. Values are strings or integers, as the TV reports them.
 
 Run it with `emrakul --config config.toml` inside a logind session that owns
 the seat. On NixOS, use the module:
@@ -197,5 +234,15 @@ TV. It costs about 300 ms a frame at 4K.
   controller is awake, anything opening the puck's hidraw unregisters it, and
   with `lizard_mode=0` every control arrives on the gamepad (Steam is
   `BTN_MODE`). Full map: [docs/hardware/steam-controller-7.3.md](docs/hardware/steam-controller-7.3.md).
+- **TV settings over SSAP (webOS 9.2.4, OLED65B46LA).** Writes need LG
+  Remote App's signed manifest at registration. Without it every
+  `setSystemSettings` is a 401, `WRITE_SETTINGS` or not. `pictureMode`
+  takes `filmMaker`, `game`, `eco` and the like, and reads back. An unknown
+  value is a 500 that changes nothing. `aspectRatio` can be written but
+  never read. `energySaving` isn't per picture mode: it stays put when the
+  mode changes. `getSystemSettings` with several keys fails if any one is
+  unknown, so emrakul reads one at a time. Run
+  `cargo test real_tv -- --ignored` with `EMRAKUL_TV_*` set (see
+  `src/tv.rs`) to check against the real TV.
 - The Smithay rev is pinned to the one niri 26.04 ships, because that build was
   seen driving this exact TV before emrakul existed.

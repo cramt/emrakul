@@ -94,6 +94,7 @@ mod tests {
             icon: None,
             declared,
             brand: None,
+            tv_profile: None,
         }
     }
 

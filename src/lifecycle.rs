@@ -21,6 +21,7 @@ use crate::{
     gamepad::PadReader,
     osk::OnScreenKeyboard,
     state::Emrakul,
+    tv::Showing,
 };
 
 /// How long an app gets to end on its own before the next, blunter step.
@@ -48,6 +49,7 @@ pub struct Home {
 pub struct Running {
     pub id: AppId,
     quit: Quit,
+    tv_profile: Option<String>,
     /// Also its process group, so a signal reaches whatever it forked.
     pid: Pid,
 }
@@ -84,6 +86,16 @@ impl Emrakul {
         match &self.session {
             Session::Home(home) | Session::Ending(_, home) => Some(home),
             Session::Running(..) => None,
+        }
+    }
+
+    /// What the TV's settings should be for.
+    pub fn showing(&self) -> Showing<'_> {
+        match &self.session {
+            Session::Home(_) | Session::Ending(..) => Showing::Home,
+            Session::Running(running, _) => Showing::App {
+                profile: running.tv_profile.as_deref(),
+            },
         }
     }
 
@@ -132,10 +144,16 @@ impl Emrakul {
         if let Err(err) = self.recency.touch(&app.id) {
             tracing::warn!("{err:#}");
         }
+        if let (Some(tv), Some(profile)) = (&self.tv, &app.tv_profile)
+            && !tv.layers().knows(profile)
+        {
+            tracing::warn!(app = %app.id, profile, "no such TV profile, using the app one");
+        }
         self.session = Session::Running(
             Running {
                 id: app.id,
                 quit: app.quit,
+                tv_profile: app.tv_profile,
                 pid,
             },
             None,

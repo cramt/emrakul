@@ -59,6 +59,9 @@ pub struct App {
     pub declared: bool,
     /// `X-Emrakul-Brand=#rrggbb`: the colour of its tile on Home.
     pub brand: Option<Rgb>,
+    /// `X-Emrakul-Tv=<profile>`: the TV settings profile it runs under, in
+    /// place of the one for apps.
+    pub tv_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +205,9 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
         icon: get("Icon").filter(|i| !i.is_empty()).map(str::to_owned),
         declared: keys.keys().any(|key| key.starts_with("X-Emrakul-")),
         brand: get("X-Emrakul-Brand").and_then(Rgb::parse),
+        tv_profile: get("X-Emrakul-Tv")
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned),
     })
 }
 
@@ -315,6 +321,7 @@ mod tests {
                 icon: None,
                 declared: false,
                 brand: None,
+                tv_profile: None,
             }
         );
     }
@@ -329,6 +336,16 @@ mod tests {
         );
         assert!(declared.declared);
         assert_eq!(declared.brand, Some(Rgb([0xff, 0x00, 0x33])));
+    }
+
+    #[test]
+    fn an_entry_can_name_its_tv_profile() {
+        let game = app(
+            "[Desktop Entry]\nType=Application\nName=Hades\nExec=moonlight\nX-Emrakul-Tv=game\n",
+        );
+        assert_eq!(game.tv_profile.as_deref(), Some("game"));
+        let blank = app("[Desktop Entry]\nType=Application\nName=X\nExec=x\nX-Emrakul-Tv=\n");
+        assert_eq!(blank.tv_profile, None);
     }
 
     #[test]

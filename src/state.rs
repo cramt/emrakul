@@ -64,6 +64,7 @@ use crate::{
     lifecycle::{Home, Session},
     osk,
     recency::Recency,
+    tv::Tv,
 };
 
 pub struct Emrakul {
@@ -95,6 +96,8 @@ pub struct Emrakul {
     pub home_view: home::View,
     pub keyboard_view: osk::View,
     pub cursor: Cursor,
+    /// `None` when no `[tv]` is configured.
+    pub tv: Option<Tv>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -111,12 +114,13 @@ pub struct Emrakul {
 
 impl Emrakul {
     pub fn new(
-        config: Config,
+        mut config: Config,
         display: Display<Emrakul>,
         loop_handle: LoopHandle<'static, Emrakul>,
         loop_signal: LoopSignal,
         backend: Backend,
     ) -> anyhow::Result<Self> {
+        let tv = config.tv.take().map(Tv::spawn).transpose()?;
         let dh = display.handle();
         let clock = Clock::new();
         let idle = Idle::new(config.idle_timeout, Instant::now());
@@ -144,6 +148,7 @@ impl Emrakul {
             home_view: home::View::new()?,
             keyboard_view: osk::View::new()?,
             cursor: Cursor::new(),
+            tv,
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
@@ -244,6 +249,9 @@ impl Emrakul {
             pointer.frame(self);
         }
         self.sync_gamepad_grabs();
+        if let Some(tv) = &self.tv {
+            tv.show(self.showing());
+        }
         self.backend.request_redraw(&self.loop_handle);
     }
 

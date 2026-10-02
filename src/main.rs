@@ -10,7 +10,9 @@ mod input;
 mod lifecycle;
 mod osk;
 mod recency;
+mod ssap;
 mod state;
+mod tv;
 
 use std::path::PathBuf;
 
