@@ -23,3 +23,11 @@ _Avoid_: Stream, Moonlight app
 **Gaming desktop**:
 The machine games are streamed from (saturn), running Sunshine.
 _Avoid_: Host, server
+
+**Idle**:
+No activity for the idle timeout while nothing that counts is inhibiting. Activity is a button, trigger or trackpad touch, a stick moved past its deadzone, the controller switching on, or a key press; gyro never counts. A web app playing video holds off idle; a game never does, so a forgotten paused game still goes idle.
+_Avoid_: Inactive, away
+
+**Blanked**:
+The state the TV machine enters when idle: the screen is switched off, and the TV may power itself down after a while. The running app keeps running, and the next activity brings back whatever was there. The input that wakes it does nothing else.
+_Avoid_: Screensaver, sleep, suspend
