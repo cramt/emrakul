@@ -238,6 +238,7 @@ dependencies = [
  "anyhow",
  "facet",
  "facet-toml",
+ "rustix 1.1.5",
  "smithay",
  "smithay-drm-extras",
  "tracing",

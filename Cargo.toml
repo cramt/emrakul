@@ -9,6 +9,7 @@ repository = "https://github.com/cramt/emrakul"
 anyhow = "1"
 facet = "0.46"
 facet-toml = "0.46"
+rustix = { version = "1", features = ["process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

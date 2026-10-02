@@ -1,11 +1,13 @@
+mod apps;
 mod config;
 mod drm;
 mod input;
+mod lifecycle;
+mod recency;
 mod state;
 
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 
-use anyhow::Context;
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
 use crate::{config::Config, state::Emrakul};
@@ -33,7 +35,10 @@ fn main() -> anyhow::Result<()> {
     drm::start(&mut state, sources)?;
     tracing::info!(socket = ?state.socket_name, "listening");
 
-    launch(&state);
+    if let Some(argv) = &state.config.launch {
+        state.run_detached(argv);
+    }
+    state.enter_home();
 
     event_loop.run(None, &mut state, |state| {
         state.space.refresh();
@@ -49,26 +54,5 @@ fn config_path() -> anyhow::Result<PathBuf> {
     match (args.next().as_deref(), args.next()) {
         (Some("--config"), Some(path)) => Ok(path.into()),
         _ => anyhow::bail!("usage: emrakul --config <path/to/config.toml>"),
-    }
-}
-
-fn launch(state: &Emrakul) {
-    let Some(launch) = &state.config.launch else {
-        return;
-    };
-    let spawned = Command::new(&launch.program)
-        .args(&launch.args)
-        .env("WAYLAND_DISPLAY", &state.socket_name)
-        .env("XDG_SESSION_TYPE", "wayland")
-        .env_remove("DISPLAY")
-        .spawn()
-        .with_context(|| format!("starting {}", launch.program));
-    match spawned {
-        // Reaped on its own thread so an exited client never lingers as a
-        // zombie while the compositor runs.
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-        }
-        Err(err) => tracing::error!("{err:#}"),
     }
 }

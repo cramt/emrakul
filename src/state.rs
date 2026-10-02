@@ -43,7 +43,12 @@ use smithay::{
     },
 };
 
-use crate::{config::Config, drm::Backend};
+use crate::{
+    config::Config,
+    drm::Backend,
+    lifecycle::{Home, Session},
+    recency::Recency,
+};
 
 pub struct Emrakul {
     pub config: Config,
@@ -58,6 +63,9 @@ pub struct Emrakul {
     /// most recently is it. Closing it brings back the one before.
     pub toplevels: Vec<Window>,
     pub space: Space<Window>,
+
+    pub session: Session,
+    pub recency: Recency,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -96,6 +104,8 @@ impl Emrakul {
             socket_name,
             toplevels: Vec::new(),
             space: Space::default(),
+            session: Session::Home(Home::default()),
+            recency: Recency::load(Recency::default_path()?)?,
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
             shm_state: ShmState::new::<Self>(&dh, vec![]),
@@ -146,13 +156,17 @@ impl Emrakul {
     }
 
     /// Map the newest toplevel fullscreen, unmap the rest, and give it the
-    /// keyboard. The single place the foreground changes.
-    fn restack(&mut self) {
+    /// keyboard. The single place the foreground changes. While an app is
+    /// ending, Home is already on screen, so nothing is mapped.
+    pub fn restack(&mut self) {
         for window in self.space.elements().cloned().collect::<Vec<_>>() {
             self.space.unmap_elem(&window);
         }
         let serial = SERIAL_COUNTER.next_serial();
-        let foreground = self.toplevels.last().cloned();
+        let foreground = match self.session {
+            Session::Ending(_) => None,
+            Session::Home(_) | Session::Running(_) => self.toplevels.last().cloned(),
+        };
         if let Some(window) = &foreground {
             self.space.map_element(window.clone(), (0, 0), true);
         }

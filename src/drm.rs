@@ -60,6 +60,10 @@ use crate::{
 /// milestone: it needs the colour pipeline to mean something first.
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
 
+/// The placeholder Home: whatever no client covers. A fullscreen app covers
+/// all of it, so this only shows when nothing is mapped.
+const HOME_COLOUR: [f32; 4] = [0.08, 0.10, 0.18, 1.0];
+
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 type Feedback = Option<OutputPresentationFeedback>;
@@ -490,7 +494,7 @@ impl Emrakul {
         backend.redraw = match screen.drm_output.render_frame(
             &mut backend.renderer,
             &elements,
-            [0.0, 0.0, 0.0, 1.0],
+            HOME_COLOUR,
             FrameFlags::DEFAULT,
         ) {
             Ok(frame) if !frame.is_empty => {

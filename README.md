@@ -20,15 +20,26 @@ What it does today:
 
 - Opens one configured DRM card and connector, and sets the configured mode or
   the display's preferred one.
+- Lists every app (installed desktop entries from `XDG_DATA_HOME` and
+  `XDG_DATA_DIRS`) on a placeholder Home, most recently launched first, then
+  by name. Entries marked `Hidden`, `NoDisplay` or `OnlyShowIn` aren't apps.
+  The order lives in `$XDG_STATE_HOME/emrakul/recent`, so it survives restarts.
+- Runs one app at a time. Going Home asks it to close (`xdg_toplevel.close`,
+  or the entry's `X-Emrakul-Quit` command if it has one), then sends its
+  process group SIGTERM after 5 s and SIGKILL 5 s after that. Whenever the
+  app's process exits, however it exits, Home comes back.
 - Shows exactly one toplevel, fullscreen and with no decorations. The newest
   one wins, and closing it brings back the one before.
 - Speaks enough Wayland for real clients: shm, dmabuf with per-surface scanout
   feedback, presentation-time, viewporter, xdg-output.
-- Reserves Ctrl+Alt+Backspace (quit) and Ctrl+Alt+F1–F12 (switch VT). Every
-  other key goes to the foreground client.
+- Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
+  Ctrl+Alt+H (go Home, standing in for the Steam button). Every other key goes
+  to the foreground client, except on Home itself, where arrows move the focus
+  and Enter launches. Home is a solid colour for now; the focused app's name
+  is only in the log.
 
 Next: the 2026 Steam Controller through the kernel's `hid-steam` driver (Linux
-7.3+), and a home screen drawn by the compositor itself.
+7.3+), and Home drawn for real: names, icons and focus.
 
 ## Configuration
 
@@ -37,7 +48,8 @@ Next: the 2026 Steam Controller through the kernel's `hid-steam` driver (Linux
 device = "/dev/dri/by-path/pci-0000:01:00.0-card"
 connector = "HDMI-A-1"
 mode = "3840x2160@60"   # optional; omitted = the display's preferred mode
-launch = ["foot"]       # optional; started once the compositor is up
+launch = ["foot"]       # optional; started once the compositor is up, outside
+                        # the app lifecycle (a test hook)
 ```
 
 Run it with `emrakul --config config.toml` inside a logind session that owns

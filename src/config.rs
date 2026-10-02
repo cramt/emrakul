@@ -3,6 +3,8 @@ use std::{fmt, path::PathBuf, str::FromStr};
 use anyhow::{Context, bail};
 use facet::Facet;
 
+use crate::apps::Argv;
+
 /// config.toml as written. Only [`Config`] leaves this module.
 #[derive(Facet)]
 struct RawConfig {
@@ -18,12 +20,7 @@ pub struct Config {
     pub connector: String,
     /// `None` takes whatever the display marks as preferred.
     pub mode: Option<Mode>,
-    pub launch: Option<Launch>,
-}
-
-pub struct Launch {
-    pub program: String,
-    pub args: Vec<String>,
+    pub launch: Option<Argv>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,16 +42,11 @@ impl Config {
     fn parse(text: &str) -> anyhow::Result<Self> {
         let raw: RawConfig = facet_toml::from_str(text).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mode = raw.mode.as_deref().map(str::parse).transpose()?;
-        let mut launch = raw.launch.into_iter();
-        let launch = launch.next().map(|program| Launch {
-            program,
-            args: launch.collect(),
-        });
         Ok(Self {
             device: raw.device.into(),
             connector: raw.connector,
             mode,
-            launch,
+            launch: Argv::from_vec(raw.launch),
         })
     }
 }
