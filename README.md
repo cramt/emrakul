@@ -113,5 +113,10 @@ every redraw transition.
   Chromium decodes in software (`VpxVideoDecoder`): it still reaches 60 fps,
   but at 77% CPU and 2–3% dropped frames. Measurements are in
   [#14](https://github.com/cramt/emrakul/issues/14).
+- **Steam Controller on 7.3.** hid-steam binds the puck (`28de:1304`) and the
+  NVIDIA driver loads on 7.3-rc4. The gamepad node only exists while the
+  controller is awake, anything opening the puck's hidraw unregisters it, and
+  with `lizard_mode=0` every control arrives on the gamepad (Steam is
+  `BTN_MODE`). Full map: [docs/hardware/steam-controller-7.3.md](docs/hardware/steam-controller-7.3.md).
 - The Smithay rev is pinned to the one niri 26.04 ships, because that build was
   seen driving this exact TV before emrakul existed.
