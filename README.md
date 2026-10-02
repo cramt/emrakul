@@ -91,5 +91,13 @@ every redraw transition.
   WSI allocates compressed buffers anyway. mpv's OpenGL path is never even
   offered for scanout. Revisit if a client or driver update starts honouring
   the scanout tranche.
+- **4K60 YouTube decodes on the card.** Chromium 154 with nvidia-vaapi-driver
+  0.0.18 decodes 4K60 VP9 on NVDEC under emrakul: `VaapiVideoDecoder`, about
+  26% decoder load, 23% CPU, 0–1.6% dropped frames. It needs
+  `LIBVA_DRIVER_NAME=nvidia` and `--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiOnNvidiaGPUs
+  --ignore-gpu-blocklist --use-gl=angle --use-angle=gl`. Without those flags
+  Chromium decodes in software (`VpxVideoDecoder`): it still reaches 60 fps,
+  but at 77% CPU and 2–3% dropped frames. Measurements are in
+  [#14](https://github.com/cramt/emrakul/issues/14).
 - The Smithay rev is pinned to the one niri 26.04 ships, because that build was
   seen driving this exact TV before emrakul existed.
