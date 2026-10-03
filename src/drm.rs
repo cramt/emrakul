@@ -25,10 +25,10 @@ use smithay::{
             Bind, ExportMem, ImportDma, ImportMemWl, Offscreen, TextureMapping as _,
             damage::OutputDamageTracker,
             element::{
-                Id, Kind,
+                Element as _, Id, Kind,
                 memory::MemoryRenderBufferRenderElement,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
-                utils::select_dmabuf_feedback,
+                utils::{RescaleRenderElement, select_dmabuf_feedback},
             },
             gles::{GlesRenderer, GlesTexture},
         },
@@ -79,7 +79,20 @@ type Feedback = Option<OutputPresentationFeedback>;
 smithay::render_elements! {
     pub Element<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Memory=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
+}
+
+/// One of emrakul's own buffers (Home, the on-screen keyboard, the arrow),
+/// drawn one buffer pixel to one screen pixel at any output scale. Smithay
+/// sizes a buffer by the output's scale, which would double them at 2, so
+/// this shrinks them back about their own corner, where they were placed.
+pub fn unscaled(element: MemoryRenderBufferRenderElement<GlesRenderer>, scale: i32) -> Element {
+    let corner = element.geometry(Scale::from(1.0)).loc;
+    Element::Memory(RescaleRenderElement::from_element(
+        element,
+        corner,
+        1.0 / f64::from(scale),
+    ))
 }
 
 pub struct Backend {
@@ -94,6 +107,9 @@ pub struct Backend {
     /// keyboard in it there as a PNG. A debug aid for seeing what emrakul
     /// draws without standing in front of the TV.
     dump_home: Option<PathBuf>,
+    /// `EMRAKUL_DUMP_FRAME`: write the next frame there, whatever is on
+    /// screen, if nothing is there yet. Delete the file to get another.
+    dump_frame: Option<PathBuf>,
 }
 
 /// The TV, once its connector has been set up.
@@ -214,6 +230,7 @@ impl Backend {
                 screen: None,
                 redraw: Redraw::Idle,
                 dump_home: std::env::var_os("EMRAKUL_DUMP_HOME").map(PathBuf::from),
+                dump_frame: std::env::var_os("EMRAKUL_DUMP_FRAME").map(PathBuf::from),
             },
             Sources {
                 session: session_notifier,
@@ -245,10 +262,16 @@ impl Backend {
         self.screen.as_ref().map(|s| &s.output)
     }
 
-    /// What a fullscreen client should size itself to.
+    /// What a fullscreen client should size itself to, and the area the
+    /// pointer and popups live in.
     pub fn output_size(&self) -> Option<Size<i32, Logical>> {
-        let mode = self.output()?.current_mode()?;
-        Some(mode.size.to_logical(1))
+        logical_size(self.output()?)
+    }
+
+    /// Physical pixels per logical one, each way.
+    pub fn scale(&self) -> i32 {
+        self.output()
+            .map_or(1, |output| output.current_scale().integer_scale())
     }
 
     /// Open an input node through the session, so the seat decides who gets
@@ -419,7 +442,14 @@ fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Screen> {
     let wl_mode = WlMode::from(drm_mode);
     output.create_global::<Emrakul>(&state.display_handle);
     output.set_preferred(wl_mode);
-    output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
+    output.change_current_state(
+        Some(wl_mode),
+        None,
+        Some(smithay::output::Scale::Integer(i32::from(
+            state.config.scale.get(),
+        ))),
+        Some((0, 0).into()),
+    );
 
     let device = backend.outputs.device();
     let mut planes = device.planes(&crtc).context("querying the CRTC's planes")?;
@@ -454,6 +484,11 @@ fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Screen> {
         scanout: None,
         foreground_presentation: None,
     })
+}
+
+fn logical_size(output: &Output) -> Option<Size<i32, Logical>> {
+    let mode = output.current_mode()?;
+    Some(mode.size.to_logical(output.current_scale().integer_scale()))
 }
 
 fn connector_name(connector: &connector::Info) -> String {
@@ -537,7 +572,8 @@ impl Emrakul {
             return;
         };
         let output = &screen.output;
-        let scale = Scale::from(1.0);
+        let scale = output.current_scale().integer_scale();
+        let surface_scale = Scale::from(f64::from(scale));
 
         // ScanoutCandidate is what lets the DRM compositor put a client's buffer
         // straight on the primary plane. Window::render_elements marks surfaces
@@ -557,8 +593,8 @@ impl Emrakul {
                         render_elements_from_surface_tree(
                             &mut backend.renderer,
                             popup.wl_surface(),
-                            location.to_physical_precise_round::<_, i32>(scale),
-                            scale,
+                            location.to_physical_precise_round::<_, i32>(surface_scale),
+                            surface_scale,
                             1.0,
                             Kind::Unspecified,
                         )
@@ -567,8 +603,8 @@ impl Emrakul {
                 let toplevel: Vec<Element> = render_elements_from_surface_tree(
                     &mut backend.renderer,
                     &surface,
-                    location.to_physical_precise_round::<_, i32>(scale),
-                    scale,
+                    location.to_physical_precise_round::<_, i32>(surface_scale),
+                    surface_scale,
                     1.0,
                     Kind::ScanoutCandidate,
                 );
@@ -589,7 +625,7 @@ impl Emrakul {
         if let Some(pointer) = seat.get_pointer()
             && pointer.current_focus().is_some()
         {
-            let cursor = cursor.elements(&mut backend.renderer, pointer.current_location());
+            let cursor = cursor.elements(&mut backend.renderer, pointer.current_location(), scale);
             elements.splice(0..0, cursor);
         }
         // Over everything, the cursor included: the trackpad does nothing
@@ -600,14 +636,14 @@ impl Emrakul {
         };
         if let Some(keyboard) = keyboard {
             let keyboard = keyboard_view.elements(&mut backend.renderer, keyboard);
-            elements.splice(0..0, keyboard.into_iter().map(Element::from));
+            elements.splice(0..0, keyboard.into_iter().map(|e| unscaled(e, scale)));
         }
         if let Some(home) = home {
             elements.extend(
                 home_view
                     .elements(&mut backend.renderer, home)
                     .into_iter()
-                    .map(Element::from),
+                    .map(|e| unscaled(e, scale)),
             );
         }
 
@@ -622,6 +658,7 @@ impl Emrakul {
                     .dump_home
                     .as_ref()
                     .filter(|_| home.is_some() || keyboard.is_some())
+                    .or(backend.dump_frame.as_ref().filter(|path| !path.exists()))
                 {
                     match dump(&mut backend.renderer, &elements, output, path) {
                         Ok(()) => tracing::info!(path = %path.display(), "dumped a frame"),
@@ -821,9 +858,13 @@ fn dump(
         .create_buffer(Fourcc::Abgr8888, buffer_size)
         .context("creating the texture")?;
     let mut target = renderer.bind(&mut texture).context("binding the texture")?;
-    OutputDamageTracker::new(size, 1.0, Transform::Normal)
-        .render_output(renderer, &mut target, 0, elements, CLEAR_COLOUR)
-        .map_err(|e| anyhow::anyhow!("rendering: {e:?}"))?;
+    OutputDamageTracker::new(
+        size,
+        output.current_scale().fractional_scale(),
+        Transform::Normal,
+    )
+    .render_output(renderer, &mut target, 0, elements, CLEAR_COLOUR)
+    .map_err(|e| anyhow::anyhow!("rendering: {e:?}"))?;
     let mapping = renderer
         .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
         .context("reading the frame back")?;
@@ -843,4 +884,43 @@ fn dump(
         .context("a frame of the wrong size")?
         .save_png(path)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tv(scale: i32) -> Output {
+        let output = Output::new(
+            "HDMI-A-1".into(),
+            PhysicalProperties {
+                size: (1430, 800).into(),
+                subpixel: Subpixel::Unknown,
+                make: "emrakul".into(),
+                model: "test".into(),
+                serial_number: String::new(),
+            },
+        );
+        let mode = WlMode {
+            size: (3840, 2160).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(
+            Some(mode),
+            None,
+            Some(smithay::output::Scale::Integer(scale)),
+            None,
+        );
+        output
+    }
+
+    #[test]
+    fn a_fullscreen_client_at_scale_2_is_half_the_mode_each_way() {
+        assert_eq!(logical_size(&tv(2)), Some(Size::from((1920, 1080))));
+    }
+
+    #[test]
+    fn a_fullscreen_client_at_scale_1_is_the_whole_mode() {
+        assert_eq!(logical_size(&tv(1)), Some(Size::from((3840, 2160))));
+    }
 }

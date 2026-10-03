@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr, time::Duration};
+use std::{collections::HashMap, fmt, num::NonZeroU8, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
 use facet::Facet;
@@ -20,6 +20,8 @@ struct RawConfig {
     launch: Vec<String>,
     /// Seconds.
     idle_timeout: Option<u64>,
+    /// Whole multiples only: fractional scaling isn't needed on a 4K TV.
+    scale: Option<u8>,
     tv: Option<RawTv>,
 }
 
@@ -52,6 +54,10 @@ pub struct Config {
     pub launch: Option<Argv>,
     /// How long without activity until the screen blanks.
     pub idle_timeout: Duration,
+    /// How many physical pixels a client's logical pixel takes, each way.
+    /// Home, the on-screen keyboard and the cursor are drawn in physical
+    /// pixels and ignore it.
+    pub scale: NonZeroU8,
     /// `None` leaves the TV's own settings alone.
     pub tv: Option<TvConfig>,
 }
@@ -86,6 +92,7 @@ impl Config {
             mode,
             launch: Argv::from_vec(raw.launch),
             idle_timeout,
+            scale: NonZeroU8::new(raw.scale.unwrap_or(1)).context("scale must be at least 1")?,
             tv: raw.tv.map(RawTv::parse).transpose()?,
         })
     }
@@ -197,6 +204,43 @@ mod tests {
         assert!(config.launch.is_none());
         assert_eq!(config.idle_timeout, Duration::from_secs(600));
         assert!(config.tv.is_none());
+    }
+
+    #[test]
+    fn scale_defaults_to_1() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.scale.get(), 1);
+    }
+
+    #[test]
+    fn scale_is_read() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+            scale = 2
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.scale.get(), 2);
+    }
+
+    #[test]
+    fn a_zero_scale_is_refused() {
+        let config = Config::parse(
+            r#"
+            device = "/dev/dri/card0"
+            connector = "HDMI-A-1"
+            scale = 0
+            "#,
+        );
+        assert!(config.is_err());
     }
 
     #[test]

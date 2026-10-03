@@ -29,10 +29,13 @@ use smithay::{
             protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial, Size},
+    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, send_surface_state,
+            with_states,
+        },
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         idle_inhibit::IdleInhibitManagerState,
@@ -313,6 +316,14 @@ impl CompositorHandler for Emrakul {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // Before the first configure, so a client draws its first buffer at
+        // the output's scale. Smithay's Space only sends wl_surface.enter,
+        // and a wl_surface v6 client goes by this instead. Sent only when
+        // it changes.
+        let scale = self.backend.scale();
+        with_states(surface, |states| {
+            send_surface_state(surface, states, scale, Transform::Normal)
+        });
 
         if let Some(window) = self
             .toplevels

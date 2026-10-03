@@ -59,6 +59,16 @@ in {
             example = ["foot"];
             description = "Command started once the compositor is up.";
           };
+          scale = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 1;
+            example = 2;
+            description = ''
+              Output scale clients are told to draw at: at 2 a 4K screen is
+              1920x1080 to them, at twice the pixel density. Home, the
+              on-screen keyboard and the cursor are unaffected.
+            '';
+          };
           idle_timeout = lib.mkOption {
             type = lib.types.nullOr lib.types.ints.positive;
             default = null;

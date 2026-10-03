@@ -18,7 +18,7 @@ use smithay::{
         calloop::{Interest, Mode, PostAction, RegistrationToken, generic::Generic},
         udev,
     },
-    utils::{Logical, Point},
+    utils::{Physical, Point},
 };
 
 use crate::{idle::Activity, osk, state::Emrakul};
@@ -29,11 +29,11 @@ pub enum PadAction {
     /// A key on the seat keyboard, as an evdev keyboard code.
     Key(KeyCode, KeyState),
     /// Move the pointer this far.
-    Move(Point<f64, Logical>),
+    Move(Point<f64, Physical>),
     /// The pointer's left button.
     Click(ButtonState),
     /// Scroll this far, in wl_pointer's terms: positive is down or right.
-    Scroll(Point<f64, Logical>),
+    Scroll(Point<f64, Physical>),
     /// The finger left the scrolling trackpad, so the client may coast.
     ScrollStop,
     OpenKeyboard,
@@ -240,7 +240,7 @@ struct Trackpad {
 }
 
 enum Stroke {
-    Moved(Point<f64, Logical>),
+    Moved(Point<f64, Physical>),
     Lifted,
 }
 

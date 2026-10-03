@@ -12,7 +12,7 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Physical, Point, SERIAL_COUNTER, Size},
 };
 
 use crate::{idle::Activity, lifecycle::HomeKey, state::Emrakul};
@@ -121,16 +121,12 @@ impl Emrakul {
     }
 
     /// Moves the pointer, kept on the screen, to whatever surface is under it.
-    pub fn move_pointer(&mut self, by: Point<f64, Logical>) {
+    pub fn move_pointer(&mut self, by: Point<f64, Physical>) {
         let (Some(pointer), Some(size)) = (self.seat.get_pointer(), self.backend.output_size())
         else {
             return;
         };
-        let to = pointer.current_location() + by;
-        let to = Point::from((
-            to.x.clamp(0.0, f64::from(size.w - 1)),
-            to.y.clamp(0.0, f64::from(size.h - 1)),
-        ));
+        let to = pointer_target(pointer.current_location(), by, size, self.backend.scale());
         let event = MotionEvent {
             location: to,
             serial: SERIAL_COUNTER.next_serial(),
@@ -165,10 +161,11 @@ impl Emrakul {
     /// Scrolls by `by`, or with `None`, ends the scroll as the finger lifts.
     /// It is a touchpad-style scroll (`finger`), so the client scrolls
     /// smoothly and may coast once it ends.
-    pub fn scroll(&mut self, by: Option<Point<f64, Logical>>) {
+    pub fn scroll(&mut self, by: Option<Point<f64, Physical>>) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let by = by.map(|by| by.to_logical(f64::from(self.backend.scale())));
         let frame = AxisFrame::new(self.clock.now().as_millis()).source(AxisSource::Finger);
         let frame = match by {
             Some(by) => frame
@@ -181,9 +178,53 @@ impl Emrakul {
     }
 }
 
+/// Where the pointer goes when the trackpad moves it `by` screen pixels.
+/// The pointer lives where clients do, in logical pixels, so a click lands
+/// on what the client drew under the cursor.
+fn pointer_target(
+    from: Point<f64, Logical>,
+    by: Point<f64, Physical>,
+    screen: Size<i32, Logical>,
+    scale: i32,
+) -> Point<f64, Logical> {
+    let to = from + by.to_logical(f64::from(scale));
+    Point::from((
+        to.x.clamp(0.0, f64::from(screen.w - 1)),
+        to.y.clamp(0.0, f64::from(screen.h - 1)),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trackpad_stroke_moves_the_pointer_in_screen_pixels_at_scale_2() {
+        // A quarter of the screen's width: 960 of the TV's 3840 pixels is
+        // 480 of a client's 1920.
+        assert_eq!(
+            pointer_target(
+                (960.0, 540.0).into(),
+                (960.0, -270.0).into(),
+                (1920, 1080).into(),
+                2
+            ),
+            Point::from((1440.0, 405.0))
+        );
+    }
+
+    #[test]
+    fn the_pointer_stays_on_the_screen() {
+        assert_eq!(
+            pointer_target(
+                (960.0, 540.0).into(),
+                (9000.0, -9000.0).into(),
+                (1920, 1080).into(),
+                2
+            ),
+            Point::from((1919.0, 0.0))
+        );
+    }
 
     fn ctrl_alt() -> ModifiersState {
         ModifiersState {

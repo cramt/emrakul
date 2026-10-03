@@ -12,12 +12,15 @@ use smithay::{
         gles::GlesRenderer,
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
-    utils::{Logical, Point, Scale},
+    utils::{Logical, Physical, Point, Scale},
     wayland::compositor::with_states,
 };
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::{drm::Element, home};
+use crate::{
+    drm::{self, Element},
+    home,
+};
 
 /// The arrow's outline, in its own pixels, tip at the origin.
 const ARROW: [(f32, f32); 7] = [
@@ -45,9 +48,15 @@ impl Cursor {
         }
     }
 
-    /// The cursor's elements with its hotspot at `at`, front to back.
-    pub fn elements(&self, renderer: &mut GlesRenderer, at: Point<f64, Logical>) -> Vec<Element> {
-        let scale = Scale::from(1.0);
+    /// The cursor's elements with its hotspot at `at`, front to back. A
+    /// client's own cursor surface is drawn at the output's `scale`, like
+    /// the rest of that client; the arrow is the same size at any scale.
+    pub fn elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        at: Point<f64, Logical>,
+        scale: i32,
+    ) -> Vec<Element> {
         match &self.status {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
@@ -58,6 +67,7 @@ impl Cursor {
                         .map(|data| data.lock().unwrap().hotspot)
                 })
                 .unwrap_or_default();
+                let scale = Scale::from(f64::from(scale));
                 render_elements_from_surface_tree(
                     renderer,
                     surface,
@@ -67,24 +77,27 @@ impl Cursor {
                     Kind::Cursor,
                 )
             }
-            CursorImageStatus::Named(_) => {
-                let at = at - Point::from((f64::from(MARGIN), f64::from(MARGIN)));
-                MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    at.to_physical(scale),
-                    &self.arrow,
-                    None,
-                    None,
-                    None,
-                    Kind::Cursor,
-                )
-                .inspect_err(|err| tracing::warn!(?err, "uploading the cursor"))
-                .map(Element::from)
-                .into_iter()
-                .collect()
-            }
+            CursorImageStatus::Named(_) => MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                arrow_location(at, scale),
+                &self.arrow,
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            )
+            .inspect_err(|err| tracing::warn!(?err, "uploading the cursor"))
+            .map(|arrow| drm::unscaled(arrow, scale))
+            .into_iter()
+            .collect(),
         }
     }
+}
+
+/// Where the arrow's buffer goes for the pointer at `at`: its tip on the
+/// screen pixel a client at `scale` draws its `at` on.
+fn arrow_location(at: Point<f64, Logical>, scale: i32) -> Point<f64, Physical> {
+    at.to_physical(f64::from(scale)) - Point::from((f64::from(MARGIN), f64::from(MARGIN)))
 }
 
 /// A white arrow with a dark outline, big enough to find on a TV across
@@ -117,4 +130,20 @@ fn arrow() -> Pixmap {
     };
     pixmap.stroke_path(&path, &paint, &stroke, at, None);
     pixmap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_arrow_tip_is_drawn_where_the_client_sees_the_pointer() {
+        // A client at scale 2 draws its logical (1440, 540) at the TV's
+        // (2880, 1080). The arrow's buffer starts MARGIN up and left of
+        // its tip, and stays its own size in screen pixels.
+        assert_eq!(
+            arrow_location((1440.0, 540.0).into(), 2),
+            Point::from((2876.0, 1076.0))
+        );
+    }
 }

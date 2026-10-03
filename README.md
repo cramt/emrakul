@@ -41,6 +41,13 @@ What it does today:
   app's process exits, however it exits, Home comes back.
 - Shows exactly one toplevel, fullscreen and with no decorations. The newest
   one wins, and closing it brings back the one before.
+- Tells clients the output's `scale` (`wl_output.scale` and
+  `preferred_buffer_scale`), and sizes the fullscreen toplevel to the mode
+  divided by it: 1920x1080 on the 4K TV at 2, so Chromium lays a page out at
+  1920 CSS pixels wide and draws it at full 4K. Home, the on-screen keyboard
+  and the cursor are emrakul's own and stay in screen pixels at any scale.
+  The pointer lives in client (logical) pixels, so a click lands on what
+  the client drew under the arrow's tip.
 - Speaks enough Wayland for real clients: shm, dmabuf with per-surface scanout
   feedback, presentation-time, viewporter, xdg-output, cursor-shape, and xdg
   popups, so a web app's `<select>` dropdowns and context menus show above
@@ -135,6 +142,7 @@ launch = ["foot"]       # optional; started once the compositor is up, outside
                         # the app lifecycle (a test hook)
 idle_timeout = 600      # optional; seconds without activity before the
                         # screen blanks, default 600
+scale = 2               # optional; output scale clients draw at, default 1
 
 # Optional. Without it the TV's settings are left alone.
 [tv]
@@ -201,6 +209,9 @@ every redraw transition.
 on-screen keyboard in it to that file as a PNG, rendered offscreen from the
 same elements the screen gets, for seeing them without being in front of the
 TV. It costs about 300 ms a frame at 4K.
+
+`EMRAKUL_DUMP_FRAME=/var/tmp/frame.png` writes the next frame, whatever is
+on screen, to that file if it isn't there yet. Delete it to get another.
 
 ## Hardware notes: ganymede (GTX 1050 Ti, nvidia 580)
 
