@@ -51,6 +51,7 @@ pub struct Running {
     quit: Quit,
     tv_profile: Option<String>,
     pub back: Back,
+    pad_reader: PadReader,
     /// Also its process group, so a signal reaches whatever it forked.
     pid: Pid,
 }
@@ -105,11 +106,15 @@ impl Emrakul {
         self.home().is_some() && self.space.elements().next().is_none()
     }
 
-    /// Who reads the controller right now. Every app is a web app until
-    /// Game entries exist; a running Game is where this returns
-    /// [`PadReader::App`], and [`Self::restack`] applies the change.
+    /// Who reads the controller right now: the running app if its entry
+    /// says so (a Game), emrakul otherwise. Home is emrakul's as soon as
+    /// going Home starts, while the app is still ending.
+    /// [`Self::restack`] applies a change.
     pub fn pad_reader(&self) -> PadReader {
-        PadReader::Emrakul
+        match &self.session {
+            Session::Running(running, _) => running.pad_reader,
+            Session::Home(_) | Session::Ending(..) => PadReader::Emrakul,
+        }
     }
 
     pub fn on_home_key(&mut self, key: HomeKey) {
@@ -156,6 +161,7 @@ impl Emrakul {
                 quit: app.quit,
                 tv_profile: app.tv_profile,
                 back: app.back,
+                pad_reader: app.pad_reader,
                 pid,
             },
             None,

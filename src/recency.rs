@@ -96,6 +96,7 @@ mod tests {
             brand: None,
             tv_profile: None,
             back: Default::default(),
+            pad_reader: crate::gamepad::PadReader::Emrakul,
         }
     }
 

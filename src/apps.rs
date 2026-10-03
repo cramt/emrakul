@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::gamepad::PadReader;
+
 /// A desktop file ID: the entry's path under `applications/`, with `/` turned
 /// into `-`. Two entries with the same ID are the same app, and the one in the
 /// earlier data dir wins.
@@ -64,6 +66,9 @@ pub struct App {
     pub tv_profile: Option<String>,
     /// `X-Emrakul-Back=<key>`: what the controller's B sends in it.
     pub back: Back,
+    /// `X-Emrakul-Controller=app`: the app reads the controller itself
+    /// (Moonlight, in a Game), so emrakul lets go of it while the app runs.
+    pub pad_reader: PadReader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +234,14 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
             Back::default()
         })
     });
+    let pad_reader = match get("X-Emrakul-Controller") {
+        None | Some("emrakul") => PadReader::Emrakul,
+        Some("app") => PadReader::App,
+        Some(other) => {
+            tracing::warn!(app = %id, value = other, "unknown X-Emrakul-Controller, emrakul keeps the controller");
+            PadReader::Emrakul
+        }
+    };
     Entry::App(App {
         id,
         name: name.to_owned(),
@@ -241,6 +254,7 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
             .filter(|p| !p.is_empty())
             .map(str::to_owned),
         back,
+        pad_reader,
     })
 }
 
@@ -356,6 +370,7 @@ mod tests {
                 brand: None,
                 tv_profile: None,
                 back: Back::AltLeft,
+                pad_reader: PadReader::Emrakul,
             }
         );
     }
@@ -375,6 +390,26 @@ mod tests {
             assert_eq!(
                 back(&format!("X-Emrakul-Back={bad}")),
                 Back::AltLeft,
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_game_reads_the_controller_itself() {
+        let reader = |extra: &str| {
+            app(&format!(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\n{extra}\n"
+            ))
+            .pad_reader
+        };
+        assert_eq!(reader(""), PadReader::Emrakul);
+        assert_eq!(reader("X-Emrakul-Controller=app"), PadReader::App);
+        assert_eq!(reader("X-Emrakul-Controller=emrakul"), PadReader::Emrakul);
+        for bad in ["App", "", "moonlight", "app;"] {
+            assert_eq!(
+                reader(&format!("X-Emrakul-Controller={bad}")),
+                PadReader::Emrakul,
                 "{bad}"
             );
         }

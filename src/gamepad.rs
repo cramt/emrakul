@@ -463,10 +463,6 @@ pub enum PadReader {
     /// The app reads the controller's nodes itself: Moonlight, in a Game.
     /// emrakul lets go of its grab and only watches for the Steam button and
     /// for activity.
-    #[expect(
-        dead_code,
-        reason = "Games aren't built yet; a Game's session will read as App"
-    )]
     App,
 }
 

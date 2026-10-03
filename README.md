@@ -65,10 +65,12 @@ What it does today:
   driver, Linux 7.3+) straight from their evdev nodes, following udev as they
   come and go with the wireless link, and grabs them (`EVIOCGRAB`) so no
   client reads them too: Jellyfin's own Gamepad API code would otherwise see
-  every press twice. Games will release the grab for Moonlight once they
-  exist. The Steam button (`BTN_MODE`) goes Home from anywhere. Everything
-  else becomes keys on the seat keyboard and a pointer, one map for every
-  web app:
+  every press twice. An app whose entry says `X-Emrakul-Controller=app` (a
+  Game: Moonlight reads the controller itself) runs with the grab released,
+  and emrakul only watches the controller for the Steam button and for
+  activity; going Home grabs it again. The Steam button (`BTN_MODE`)
+  goes Home from anywhere. Everything else becomes keys on the seat keyboard
+  and a pointer, one map for every web app:
 
   | Control | Becomes |
   | --- | --- |
