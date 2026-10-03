@@ -44,14 +44,15 @@ pub enum Input {
 pub enum Outcome {
     Nothing,
     Moved,
-    /// Press and release this on the seat keyboard.
-    Type(KeyCode),
+    /// Press these on the seat keyboard in order and release them in
+    /// reverse, so a modifier wraps its key.
+    Type(&'static [KeyCode]),
     Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
-    Type(KeyCode, &'static str),
+    Type(&'static [KeyCode], &'static str),
     Close,
 }
 
@@ -66,70 +67,72 @@ impl Key {
 
 pub const COLUMNS: usize = 10;
 
-const fn t(code: KeyCode, label: &'static str) -> Key {
-    Key::Type(code, label)
+const fn t(codes: &'static [KeyCode], label: &'static str) -> Key {
+    Key::Type(codes, label)
 }
 
 /// A key wider than one column fills several neighbouring cells, so moving
 /// up or down keeps the column you are in.
 pub const LAYOUT: [[Key; COLUMNS]; 5] = {
     use KeyCode as K;
-    const SPACE: Key = t(K::KEY_SPACE, "Space");
-    const BACKSPACE: Key = t(K::KEY_BACKSPACE, "Backspace");
-    const ENTER: Key = t(K::KEY_ENTER, "Enter");
-    const TAB: Key = t(K::KEY_TAB, "Tab");
+    const SPACE: Key = t(&[K::KEY_SPACE], "Space");
+    const BACKSPACE: Key = t(&[K::KEY_BACKSPACE], "Backspace");
+    const ENTER: Key = t(&[K::KEY_ENTER], "Enter");
+    const TAB: Key = t(&[K::KEY_TAB], "Tab");
+    // Ctrl+V, for text the phone put on the clipboard over KDE Connect.
+    const PASTE: Key = t(&[K::KEY_LEFTCTRL, K::KEY_V], "Paste");
     const CLOSE: Key = Key::Close;
     [
         [
-            t(K::KEY_1, "1"),
-            t(K::KEY_2, "2"),
-            t(K::KEY_3, "3"),
-            t(K::KEY_4, "4"),
-            t(K::KEY_5, "5"),
-            t(K::KEY_6, "6"),
-            t(K::KEY_7, "7"),
-            t(K::KEY_8, "8"),
-            t(K::KEY_9, "9"),
-            t(K::KEY_0, "0"),
+            t(&[K::KEY_1], "1"),
+            t(&[K::KEY_2], "2"),
+            t(&[K::KEY_3], "3"),
+            t(&[K::KEY_4], "4"),
+            t(&[K::KEY_5], "5"),
+            t(&[K::KEY_6], "6"),
+            t(&[K::KEY_7], "7"),
+            t(&[K::KEY_8], "8"),
+            t(&[K::KEY_9], "9"),
+            t(&[K::KEY_0], "0"),
         ],
         [
-            t(K::KEY_Q, "q"),
-            t(K::KEY_W, "w"),
-            t(K::KEY_E, "e"),
-            t(K::KEY_R, "r"),
-            t(K::KEY_T, "t"),
-            t(K::KEY_Y, "y"),
-            t(K::KEY_U, "u"),
-            t(K::KEY_I, "i"),
-            t(K::KEY_O, "o"),
-            t(K::KEY_P, "p"),
+            t(&[K::KEY_Q], "q"),
+            t(&[K::KEY_W], "w"),
+            t(&[K::KEY_E], "e"),
+            t(&[K::KEY_R], "r"),
+            t(&[K::KEY_T], "t"),
+            t(&[K::KEY_Y], "y"),
+            t(&[K::KEY_U], "u"),
+            t(&[K::KEY_I], "i"),
+            t(&[K::KEY_O], "o"),
+            t(&[K::KEY_P], "p"),
         ],
         [
-            t(K::KEY_A, "a"),
-            t(K::KEY_S, "s"),
-            t(K::KEY_D, "d"),
-            t(K::KEY_F, "f"),
-            t(K::KEY_G, "g"),
-            t(K::KEY_H, "h"),
-            t(K::KEY_J, "j"),
-            t(K::KEY_K, "k"),
-            t(K::KEY_L, "l"),
-            t(K::KEY_DOT, "."),
+            t(&[K::KEY_A], "a"),
+            t(&[K::KEY_S], "s"),
+            t(&[K::KEY_D], "d"),
+            t(&[K::KEY_F], "f"),
+            t(&[K::KEY_G], "g"),
+            t(&[K::KEY_H], "h"),
+            t(&[K::KEY_J], "j"),
+            t(&[K::KEY_K], "k"),
+            t(&[K::KEY_L], "l"),
+            t(&[K::KEY_DOT], "."),
         ],
         [
-            t(K::KEY_Z, "z"),
-            t(K::KEY_X, "x"),
-            t(K::KEY_C, "c"),
-            t(K::KEY_V, "v"),
-            t(K::KEY_B, "b"),
-            t(K::KEY_N, "n"),
-            t(K::KEY_M, "m"),
+            t(&[K::KEY_Z], "z"),
+            t(&[K::KEY_X], "x"),
+            t(&[K::KEY_C], "c"),
+            t(&[K::KEY_V], "v"),
+            t(&[K::KEY_B], "b"),
+            t(&[K::KEY_N], "n"),
+            t(&[K::KEY_M], "m"),
             BACKSPACE,
             BACKSPACE,
             BACKSPACE,
         ],
         [
-            CLOSE, CLOSE, TAB, TAB, SPACE, SPACE, SPACE, SPACE, ENTER, ENTER,
+            CLOSE, CLOSE, PASTE, PASTE, TAB, SPACE, SPACE, SPACE, ENTER, ENTER,
         ],
     ]
 };
@@ -188,10 +191,10 @@ impl OnScreenKeyboard {
     pub fn on_input(&mut self, input: Input) -> Outcome {
         match input {
             Input::Press => match self.focus.key() {
-                Key::Type(code, _) => Outcome::Type(code),
+                Key::Type(codes, _) => Outcome::Type(codes),
                 Key::Close => Outcome::Close,
             },
-            Input::Backspace => Outcome::Type(KeyCode::KEY_BACKSPACE),
+            Input::Backspace => Outcome::Type(&[KeyCode::KEY_BACKSPACE]),
             Input::Close => Outcome::Close,
             Input::Move(dir) => {
                 let Cell { row, col } = self.focus;
@@ -243,9 +246,13 @@ impl Emrakul {
         match keyboard.on_input(input) {
             Outcome::Nothing => return,
             Outcome::Moved => {}
-            Outcome::Type(code) => {
-                self.pad_key(code, KeyState::Pressed);
-                self.pad_key(code, KeyState::Released);
+            Outcome::Type(codes) => {
+                for &code in codes {
+                    self.pad_key(code, KeyState::Pressed);
+                }
+                for &code in codes.iter().rev() {
+                    self.pad_key(code, KeyState::Released);
+                }
                 return;
             }
             Outcome::Close => {
@@ -423,7 +430,7 @@ mod tests {
     fn opens_on_q() {
         assert_eq!(
             typed(&mut OnScreenKeyboard::new()),
-            Outcome::Type(KeyCode::KEY_Q)
+            Outcome::Type(&[KeyCode::KEY_Q])
         );
     }
 
@@ -431,9 +438,9 @@ mod tests {
     fn the_d_pad_walks_the_grid() {
         let mut keyboard = OnScreenKeyboard::new();
         walk(&mut keyboard, &[Dir::Right, Dir::Right, Dir::Down]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_D));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_D]));
         walk(&mut keyboard, &[Dir::Up, Dir::Up]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_3));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_3]));
     }
 
     #[test]
@@ -442,7 +449,7 @@ mod tests {
         assert_eq!(keyboard.on_input(Input::Move(Dir::Left)), Outcome::Nothing);
         walk(&mut keyboard, &[Dir::Up]);
         assert_eq!(keyboard.on_input(Input::Move(Dir::Up)), Outcome::Nothing);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_1));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_1]));
     }
 
     #[test]
@@ -452,19 +459,27 @@ mod tests {
         walk(&mut keyboard, &[Dir::Down, Dir::Down, Dir::Down]);
         assert_eq!(typed(&mut keyboard), Outcome::Close);
         walk(&mut keyboard, &[Dir::Right]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_TAB));
+        assert_eq!(typed(&mut keyboard), PASTE);
         walk(&mut keyboard, &[Dir::Right]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_SPACE));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_TAB]));
         walk(&mut keyboard, &[Dir::Right]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_ENTER));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_SPACE]));
+        walk(&mut keyboard, &[Dir::Right]);
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_ENTER]));
         assert_eq!(keyboard.on_input(Input::Move(Dir::Right)), Outcome::Nothing);
         walk(&mut keyboard, &[Dir::Left]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_SPACE));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_SPACE]));
         walk(&mut keyboard, &[Dir::Left]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_TAB));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_TAB]));
+        walk(&mut keyboard, &[Dir::Left]);
+        assert_eq!(typed(&mut keyboard), PASTE);
         walk(&mut keyboard, &[Dir::Left]);
         assert_eq!(typed(&mut keyboard), Outcome::Close);
     }
+
+    /// Ctrl held around V, so what the phone sent over KDE Connect lands in
+    /// the focused field.
+    const PASTE: Outcome = Outcome::Type(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_V]);
 
     #[test]
     fn up_from_a_wide_key_lands_above_where_you_entered_it() {
@@ -472,16 +487,19 @@ mod tests {
         // From m (column 6) down onto Space, then back up: m again.
         walk(&mut keyboard, &[Dir::Down, Dir::Down]);
         walk(&mut keyboard, &[Dir::Right; 6]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_M));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_M]));
         walk(&mut keyboard, &[Dir::Down]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_SPACE));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_SPACE]));
         walk(&mut keyboard, &[Dir::Up]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_M));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_M]));
         // Right from m onto Backspace, and left off it back onto m.
         walk(&mut keyboard, &[Dir::Right]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_BACKSPACE));
+        assert_eq!(
+            typed(&mut keyboard),
+            Outcome::Type(&[KeyCode::KEY_BACKSPACE])
+        );
         walk(&mut keyboard, &[Dir::Left]);
-        assert_eq!(typed(&mut keyboard), Outcome::Type(KeyCode::KEY_M));
+        assert_eq!(typed(&mut keyboard), Outcome::Type(&[KeyCode::KEY_M]));
     }
 
     #[test]
@@ -489,7 +507,7 @@ mod tests {
         let mut keyboard = OnScreenKeyboard::new();
         assert_eq!(
             keyboard.on_input(Input::Backspace),
-            Outcome::Type(KeyCode::KEY_BACKSPACE)
+            Outcome::Type(&[KeyCode::KEY_BACKSPACE])
         );
         assert_eq!(keyboard.on_input(Input::Close), Outcome::Close);
     }
@@ -500,6 +518,6 @@ mod tests {
             let cols: Vec<_> = spans(row).flat_map(|(_, cols)| cols).collect();
             assert_eq!(cols, (0..COLUMNS).collect::<Vec<_>>(), "row {row}");
         }
-        assert_eq!(spans(4).count(), 4);
+        assert_eq!(spans(4).count(), 5);
     }
 }

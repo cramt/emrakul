@@ -91,7 +91,7 @@ What it does today:
   trackpad moves the pointer the width of the screen.
 - Draws its own on-screen keyboard over a running app when Menu is
   pressed, so a search box can be filled from the couch: digits, lowercase
-  letters, `.`, Backspace, Tab, Space, Enter and Close, on keys styled like
+  letters, `.`, Backspace, Tab, Space, Enter, Paste (Ctrl+V) and Close, on keys styled like
   Home's tiles, along the bottom of the screen. The D-pad or stick moves
   the white focus (no repeat while held), A types the focused key into the
   app through the seat keyboard, as if typed on a real one, and B is
