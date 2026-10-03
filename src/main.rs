@@ -54,6 +54,7 @@ fn main() -> anyhow::Result<()> {
         state.run_detached(argv);
     }
     state.enter_home();
+    state.rescan_home_while_shown();
 
     event_loop.run(None, &mut state, |state| {
         state.space.refresh();

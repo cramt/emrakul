@@ -27,6 +27,13 @@ use crate::{
 /// How long an app gets to end on its own before the next, blunter step.
 const GRACE: Duration = Duration::from_secs(5);
 
+/// How often Home reads the app list again while it is on screen. Entries
+/// can appear as the session runs (nixconf's emrakul-games writes a Game per
+/// app a paired gaming desktop lists), not only between apps. Polled rather
+/// than watched: a data dir may not exist until its first entry does, and
+/// reading a dozen small files every few seconds costs nothing.
+const RESCAN: Duration = Duration::from_secs(3);
+
 pub enum Session {
     Home(Home),
     /// The app, and the on-screen keyboard over it while open.
@@ -44,6 +51,21 @@ pub struct Home {
     /// Index into `apps`. Wraps, so it is only out of range when `apps` is
     /// empty, and `apps.get` covers that.
     pub focus: usize,
+}
+
+impl Home {
+    /// This Home with `apps` in place of its own, focus staying on the app
+    /// it was on (the first, if that one went). `None` if nothing changed.
+    fn replaced_by(&self, apps: Vec<App>) -> Option<Self> {
+        if apps == self.apps {
+            return None;
+        }
+        let focused = self.apps.get(self.focus).map(|app| &app.id);
+        let focus = focused
+            .and_then(|id| apps.iter().position(|app| app.id == *id))
+            .unwrap_or(0);
+        Some(Self { apps, focus })
+    }
 }
 
 pub struct Running {
@@ -67,6 +89,38 @@ impl Emrakul {
     pub fn enter_home(&mut self) {
         self.session = Session::Home(self.discover_home());
         self.restack();
+    }
+
+    /// Reads the app list again every [`RESCAN`] while Home is up, and shows
+    /// it if it changed.
+    pub fn rescan_home_while_shown(&mut self) {
+        let timer = self
+            .loop_handle
+            .insert_source(Timer::from_duration(RESCAN), |_, _, state| {
+                state.rescan_home();
+                TimeoutAction::ToDuration(RESCAN)
+            });
+        if let Err(err) = timer {
+            tracing::error!("scheduling Home's rescan: {err}");
+        }
+    }
+
+    fn rescan_home(&mut self) {
+        let Session::Home(home) = &self.session else {
+            return;
+        };
+        let apps = self.recency.order(apps::discover(&apps::data_dirs()));
+        let Some(home) = home.replaced_by(apps) else {
+            return;
+        };
+        tracing::info!(
+            count = home.apps.len(),
+            first = ?home.apps.iter().take(5).map(|a| &a.name).collect::<Vec<_>>(),
+            "Home changed"
+        );
+        self.home_view.forget_apps();
+        self.session = Session::Home(home);
+        self.backend.request_redraw(&self.loop_handle);
     }
 
     /// Every app, in Home's order. Focus starts on the first: the app just
@@ -273,5 +327,59 @@ impl Emrakul {
             }
             Err(err) => tracing::error!("starting {}: {err}", argv.program),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn home(ids: &[&str], focus: usize) -> Home {
+        let app = |id: &&str| App {
+            id: AppId::new(*id),
+            name: id.to_string(),
+            exec: Argv::from_vec(vec![id.to_string()]).unwrap(),
+            quit: Quit::Close,
+            icon: None,
+            declared: true,
+            brand: None,
+            tv_profile: None,
+            back: Back::default(),
+            pad_reader: PadReader::Emrakul,
+        };
+        Home {
+            apps: ids.iter().map(app).collect(),
+            focus,
+        }
+    }
+
+    fn ids(home: &Home) -> (Vec<&str>, usize) {
+        (
+            home.apps.iter().map(|a| a.id.as_str()).collect(),
+            home.focus,
+        )
+    }
+
+    #[test]
+    fn a_rescan_keeps_focus_on_the_same_app() {
+        let before = home(&["youtube", "jellyfin"], 1);
+        assert!(
+            before
+                .replaced_by(home(&["youtube", "jellyfin"], 0).apps)
+                .is_none()
+        );
+
+        let grew = before
+            .replaced_by(home(&["youtube", "desktop", "jellyfin"], 0).apps)
+            .unwrap();
+        assert_eq!(ids(&grew), (vec!["youtube", "desktop", "jellyfin"], 2));
+
+        let lost_focused = before.replaced_by(home(&["youtube"], 0).apps).unwrap();
+        assert_eq!(ids(&lost_focused), (vec!["youtube"], 0));
+
+        let was_empty = Home::default()
+            .replaced_by(home(&["desktop"], 0).apps)
+            .unwrap();
+        assert_eq!(ids(&was_empty), (vec!["desktop"], 0));
     }
 }

@@ -25,14 +25,17 @@ What it does today:
   follow: entries with any `X-Emrakul-*` key (the ones nixconf declares for
   the TV) first, then the rest, each A to Z. Entries marked `Hidden`,
   `NoDisplay` or `OnlyShowIn` aren't apps. The order lives in
-  `$XDG_STATE_HOME/emrakul/recent`, so it survives restarts.
+  `$XDG_STATE_HOME/emrakul/recent`, so it survives restarts. The list is
+  read again whenever Home comes back, and every 3 s while it is up, so an
+  entry written mid-session (nixconf's Games, found on the gaming desktops)
+  shows up without leaving Home; focus stays on the app it was on.
 - Draws Home as the webOS ribbon: the focused app's name large over a dark
   backdrop, and one row of tiles along the bottom that scrolls once four
   tiles are left of the focus. Each tile is the entry's `Icon=` (hicolor's
   scalable SVG, else its largest PNG, else `pixmaps`; the first letter of
   its name if there is none) centred on its `X-Emrakul-Brand=#rrggbb`
   colour, or dark grey. Focus starts on the app just quit. Home only
-  redraws when focus moves: one frame per press, 20 to 30 ms to render on
+  redraws when focus moves or the list changes: one frame per press, 20 to 30 ms to render on
   ganymede, and nothing while it sits there.
   ![Home on ganymede](docs/screenshots/home-ribbon.png)
 - Runs one app at a time. Going Home asks it to close (`xdg_toplevel.close`,

@@ -17,11 +17,11 @@ An app that is a browser (Firefox or Chromium) opening one URL fullscreen, such 
 _Avoid_: Bookmark, site, browser shortcut
 
 **Game**:
-An app that streams one game from the gaming desktop over Moonlight. Games are never run on the TV machine itself.
+An app that streams one game from a gaming desktop over Moonlight. There is one per app each paired gaming desktop lists, found as the session runs. Games are never run on the TV machine itself.
 _Avoid_: Stream, Moonlight app
 
 **Gaming desktop**:
-The machine games are streamed from (saturn), running Sunshine.
+A machine games are streamed from, running Sunshine and paired with the TV machine's Moonlight: saturn, and any PC paired later by PIN.
 _Avoid_: Host, server
 
 **Idle**:
