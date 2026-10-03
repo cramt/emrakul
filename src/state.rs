@@ -2,9 +2,9 @@ use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::on_commit_buffer_handler},
-    delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
-    delegate_output, delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_dmabuf, delegate_ext_data_control, delegate_output, delegate_presentation,
+    delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{
         PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space,
         Window, find_popup_root_surface, get_popup_toplevel_coords,
@@ -44,6 +44,7 @@ use smithay::{
         selection::{
             SelectionHandler,
             data_device::{DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler},
+            ext_data_control, wlr_data_control,
         },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -109,6 +110,8 @@ pub struct Emrakul {
     pub dmabuf_global: Option<DmabufGlobal>,
     _globals: Globals,
     pub data_device_state: DataDeviceState,
+    pub ext_data_control_state: ext_data_control::DataControlState,
+    pub wlr_data_control_state: wlr_data_control::DataControlState,
     pub seat_state: SeatState<Emrakul>,
     pub seat: Seat<Emrakul>,
 
@@ -167,6 +170,22 @@ impl Emrakul {
                 _cursor_shape: CursorShapeManagerState::new::<Self>(&dh),
             },
             data_device_state: DataDeviceState::new::<Self>(&dh),
+            // Data control lets a client with no window own and read the
+            // clipboard: kdeconnectd puts what the phone sent there, for
+            // Ctrl+V in a web app. KGuiAddons' KSystemClipboard (6.30) asks
+            // for ext first and falls back to wlr, which older clipboard
+            // tools still only speak. Every client gets it: everything on
+            // the TV is ours.
+            ext_data_control_state: ext_data_control::DataControlState::new::<Self, _>(
+                &dh,
+                None,
+                |_| true,
+            ),
+            wlr_data_control_state: wlr_data_control::DataControlState::new::<Self, _>(
+                &dh,
+                None,
+                |_| true,
+            ),
             seat_state,
             seat,
             clock,
@@ -538,6 +557,18 @@ impl DataDeviceHandler for Emrakul {
     }
 }
 
+impl ext_data_control::DataControlHandler for Emrakul {
+    fn data_control_state(&mut self) -> &mut ext_data_control::DataControlState {
+        &mut self.ext_data_control_state
+    }
+}
+
+impl wlr_data_control::DataControlHandler for Emrakul {
+    fn data_control_state(&mut self) -> &mut wlr_data_control::DataControlState {
+        &mut self.wlr_data_control_state
+    }
+}
+
 impl smithay::input::dnd::DndGrabHandler for Emrakul {}
 impl WaylandDndGrabHandler for Emrakul {}
 
@@ -553,6 +584,8 @@ delegate_xdg_shell!(Emrakul);
 delegate_xdg_decoration!(Emrakul);
 delegate_seat!(Emrakul);
 delegate_data_device!(Emrakul);
+delegate_ext_data_control!(Emrakul);
+delegate_data_control!(Emrakul);
 delegate_output!(Emrakul);
 delegate_presentation!(Emrakul);
 delegate_viewporter!(Emrakul);

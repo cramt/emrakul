@@ -53,6 +53,10 @@ What it does today:
   popups, so a web app's `<select>` dropdowns and context menus show above
   it, kept on the screen. They close when their app leaves the screen or on
   a click outside them.
+- Has one clipboard: `wl_data_device` for apps, and data-control
+  (`ext_data_control_v1` and `zwlr_data_control_v1`) for clients with no
+  window. kdeconnectd sets it there with text sent from a phone, and Ctrl+V
+  (or the on-screen keyboard's Paste) pastes it into a web app.
 - Reserves Ctrl+Alt+Backspace (quit), Ctrl+Alt+F1–F12 (switch VT) and
   Ctrl+Alt+H (go Home, the keyboard's Steam button). Every other key goes
   to the foreground client, except on Home itself, where arrows move the focus
