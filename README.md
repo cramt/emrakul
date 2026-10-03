@@ -64,18 +64,18 @@ What it does today:
   | D-pad, left stick past half way | arrows, repeating while held |
   | A | Enter |
   | B | Alt+Left (back) |
-  | RT / LT, full pull | Tab / Shift+Tab, repeating while held |
+  | RB / LB | Tab / Shift+Tab, repeating while held |
   | X | left click, where the pointer is |
   | Y | k |
-  | LB / RB | j / l |
+  | LT / RT, full pull | j / l (YouTube: back / forward 10 s) |
   | View | Escape |
-| R5 / L5 (lower grips) | zoom in / out (Ctrl+= / Ctrl+-) |
+  | R5 / L5 (lower grips) | zoom in / out (Ctrl+= / Ctrl+-) |
   | Right trackpad, its click | pointer, left button |
   | Left trackpad | scroll, wheel-style (finger up scrolls up) |
   | Menu | the on-screen keyboard, in an app |
   | Analog triggers, stick clicks, right stick, grips, Quick access | nothing yet |
 
-  Web apps are driven by keyboard focus: the triggers move it, A
+  Web apps are driven by keyboard focus: the bumpers move it, A
   activates it. Home reads the same arrows and Enter: they move the focus
   and launch. The cursor is emrakul's own arrow, drawn at TV size; Chromium asks for it by
   name over `wp_cursor_shape_v1` and hides it over a playing video. It

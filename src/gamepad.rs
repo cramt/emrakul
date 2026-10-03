@@ -81,12 +81,12 @@ fn binding(button: KeyCode) -> Option<Binding> {
         // X clicks wherever the pointer already is.
         K::BTN_NORTH => Binding::Click,
         K::BTN_WEST => Binding::Keys(&[K::KEY_K]),
+        K::BTN_TR => Binding::Keys(&[K::KEY_TAB]),
+        K::BTN_TL => Binding::Keys(&[K::KEY_LEFTSHIFT, K::KEY_TAB]),
         // The triggers' own full-pull buttons, not their analog axes: they
         // fire near the end of the pull and come back with hysteresis.
-        K::BTN_TR2 => Binding::Keys(&[K::KEY_TAB]),
-        K::BTN_TL2 => Binding::Keys(&[K::KEY_LEFTSHIFT, K::KEY_TAB]),
-        K::BTN_TL => Binding::Keys(&[K::KEY_J]),
-        K::BTN_TR => Binding::Keys(&[K::KEY_L]),
+        K::BTN_TR2 => Binding::Keys(&[K::KEY_L]),
+        K::BTN_TL2 => Binding::Keys(&[K::KEY_J]),
         K::BTN_SELECT => Binding::Keys(&[K::KEY_ESC]),
         // Lower back grips (R5, L5): page zoom, which Chromium remembers per
         // site. Codes 551/550 are BTN_GRIPR2/BTN_GRIPL2; evdev-rs predates them.
@@ -791,9 +791,9 @@ mod tests {
             (KeyCode::BTN_DPAD_RIGHT, KeyCode::KEY_RIGHT),
             (KeyCode::BTN_SOUTH, KeyCode::KEY_ENTER),
             (KeyCode::BTN_WEST, KeyCode::KEY_K),
-            (KeyCode::BTN_TR2, KeyCode::KEY_TAB),
-            (KeyCode::BTN_TL, KeyCode::KEY_J),
-            (KeyCode::BTN_TR, KeyCode::KEY_L),
+            (KeyCode::BTN_TR, KeyCode::KEY_TAB),
+            (KeyCode::BTN_TR2, KeyCode::KEY_L),
+            (KeyCode::BTN_TL2, KeyCode::KEY_J),
             (KeyCode::BTN_SELECT, KeyCode::KEY_ESC),
         ] {
             assert_eq!(
@@ -818,9 +818,9 @@ mod tests {
     }
 
     #[test]
-    fn lt_is_shift_tab_released_in_reverse() {
+    fn lb_is_shift_tab_released_in_reverse() {
         assert_eq!(
-            feed(&mut steam_controller(), tap(KeyCode::BTN_TL2)),
+            feed(&mut steam_controller(), tap(KeyCode::BTN_TL)),
             [
                 down(KeyCode::KEY_LEFTSHIFT),
                 down(KeyCode::KEY_TAB),
