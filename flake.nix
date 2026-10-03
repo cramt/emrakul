@@ -58,6 +58,22 @@
       emrakul = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
+          # emrakul-portal, the RemoteDesktop backend: how xdg-desktop-portal
+          # finds it (the module adds this package to xdg.portal.extraPortals)
+          # and how D-Bus starts it, through its systemd user unit.
+          postInstall = ''
+            install -Dm644 /dev/stdin $out/share/xdg-desktop-portal/portals/emrakul.portal <<EOF
+            [portal]
+            DBusName=org.freedesktop.impl.portal.desktop.emrakul
+            Interfaces=org.freedesktop.impl.portal.RemoteDesktop;
+            EOF
+            install -Dm644 /dev/stdin $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.emrakul.service <<EOF
+            [D-BUS Service]
+            Name=org.freedesktop.impl.portal.desktop.emrakul
+            Exec=$out/bin/emrakul-portal
+            SystemdService=emrakul-portal.service
+            EOF
+          '';
           meta.mainProgram = "emrakul";
         });
     in {

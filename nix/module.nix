@@ -16,7 +16,7 @@ self: {
     name = "emrakul-start-session";
     runtimeInputs = [pkgs.dbus pkgs.systemd];
     text = ''
-      dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_SESSION_TYPE
+      dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
       exec systemctl --user start emrakul-session.target
     '';
   };
@@ -28,6 +28,17 @@ in {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       defaultText = lib.literalExpression "emrakul.packages.\${system}.default";
+    };
+
+    portalPackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      defaultText = lib.literalExpression "emrakul.packages.\${system}.default";
+      description = ''
+        Package carrying `emrakul-portal` and the files xdg-desktop-portal and
+        D-Bus find it by. Separate from `package`, which a host may replace
+        with a wrapper around the compositor alone.
+      '';
     };
 
     user = lib.mkOption {
@@ -137,6 +148,33 @@ in {
       after = ["graphical-session-pre.target"];
     };
 
+    # Remote input (a phone through KDE Connect) asks the RemoteDesktop
+    # portal, whose backend is emrakul-portal: it grants every request and
+    # connects the caller to emrakul's EIS socket. It is the only portal
+    # interface emrakul provides. The frontend picks backends by
+    # XDG_CURRENT_DESKTOP, which the session hands to the user manager.
+    xdg.portal = {
+      enable = true;
+      extraPortals = [cfg.portalPackage];
+      config.emrakul = {
+        default = lib.mkDefault "none";
+        "org.freedesktop.impl.portal.RemoteDesktop" = "emrakul";
+      };
+    };
+
+    # D-Bus activated (the package's service file names this unit), so the
+    # first request after login finds it.
+    systemd.user.services.emrakul-portal = {
+      description = "emrakul's xdg-desktop-portal backend (RemoteDesktop)";
+      partOf = ["graphical-session.target"];
+      after = ["graphical-session.target"];
+      serviceConfig = {
+        Type = "dbus";
+        BusName = "org.freedesktop.impl.portal.desktop.emrakul";
+        ExecStart = "${cfg.portalPackage}/bin/emrakul-portal";
+      };
+    };
+
     systemd.services."getty@${tty}".enable = false;
     systemd.services."autovt@${tty}".enable = false;
 
@@ -145,7 +183,10 @@ in {
       wantedBy = ["graphical.target"];
       after = ["systemd-user-sessions.service" "plymouth-quit-wait.service"];
       conflicts = ["getty@${tty}.service"];
-      environment.XDG_SESSION_TYPE = "wayland";
+      environment = {
+        XDG_SESSION_TYPE = "wayland";
+        XDG_CURRENT_DESKTOP = "emrakul";
+      };
       serviceConfig = {
         User = cfg.user;
         # PAM's login stack is what makes logind hand this process a seat0

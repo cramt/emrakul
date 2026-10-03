@@ -122,6 +122,11 @@ What it does today:
   that needs Shift, because KDE Connect sends a character's keycode with no
   modifiers (`A` would otherwise arrive as `a`); emrakul holds Shift around
   those. Only senders are let in: nothing can capture input from it.
+  Programs get there through the RemoteDesktop portal: `emrakul-portal`
+  is the backend (`org.freedesktop.impl.portal.RemoteDesktop`, version 2),
+  grants keyboard and pointer to whoever asks without a dialog, and answers
+  ConnectToEIS with a connection to that socket. That is how KDE Connect's
+  remote input (a phone as touchpad and keyboard) reaches the TV.
 - Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
   minutes unless configured. The TV shows No Signal and may power itself
   down. Activity is a controller button, a stick past a quarter of its
@@ -219,8 +224,14 @@ gamepad node stays silent, and takes the Steam Controller's hidraw nodes
 away from the seat's user, since anything opening one makes `hid-steam`
 unregister the gamepad.
 
+The module also enables xdg-desktop-portal with emrakul's backend for
+RemoteDesktop and nothing else (`xdg.portal.config.emrakul`), and runs
+emrakul with `XDG_CURRENT_DESKTOP=emrakul`, which is how the portal picks
+that config. `emrakul-portal` is D-Bus activated as a user service, from
+`portalPackage`, so `package` can be a wrapper around the compositor alone.
+
 Once the compositor is up, the module's default `launch` gives
-`WAYLAND_DISPLAY` to the user's systemd and D-Bus and starts
+`WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the user's systemd and D-Bus and starts
 `emrakul-session.target`, which binds `graphical-session.target`. A user
 service with `wantedBy = ["graphical-session.target"]` (kdeconnectd on
 ganymede) runs inside the session, as under any desktop.
