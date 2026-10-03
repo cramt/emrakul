@@ -248,6 +248,12 @@ nix build
 foreground surface was or wasn't scanned out directly. Add `emrakul=trace` for
 every redraw transition.
 
+`cargo run --example remote-input -- --move 200,100 --click --text 'Hi!'`
+drives a running emrakul the way KDE Connect does: through the portal
+(CreateSession, SelectDevices, Start, ConnectToEIS), then over EI, typing
+each character by the first keycode carrying it on any level. `--direct`
+skips the portal for the EIS socket.
+
 `EMRAKUL_DUMP_HOME=/var/tmp/home.png` writes every frame with Home or the
 on-screen keyboard in it to that file as a PNG, rendered offscreen from the
 same elements the screen gets, for seeing them without being in front of the
