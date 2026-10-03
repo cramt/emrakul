@@ -138,10 +138,13 @@ What it does today:
   the TV refuses gets a warning, once. An off TV costs nothing: the TV is
   talked to from a thread of its own.
 
-ganymede's cutover is in nixconf ([dd6eb8a](https://github.com/cramt/nixconf/commit/dd6eb8a)), waiting on a deploy:
-emrakul is its only session, and Home lists three web apps, YouTube,
-Nebula and Jellyfin, each Chromium with the VA-API flags below and its own
-profile under `~/.local/state/web-apps`. Plasma, SDDM and Steam are gone.
+ganymede runs emrakul as its only session (nixconf
+[dd6eb8a](https://github.com/cramt/nixconf/commit/dd6eb8a)). Home lists
+three web apps, each with its own profile under `~/.local/state/web-apps`:
+YouTube is youtube.com/tv (the TV UI) in Firefox, Nebula is nebula.tv in
+Firefox, both with uBlock Origin and SponsorBlock, and Jellyfin is Chromium
+with the VA-API flags below, in Jellyfin's TV layout. YouTube and Jellyfin
+set `X-Emrakul-Back=Escape`. Plasma, SDDM and Steam are gone.
 Next: game entries over Moonlight.
 
 ## Configuration

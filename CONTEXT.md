@@ -13,7 +13,7 @@ Anything Home can launch: an installed desktop entry. At most one app runs at a 
 _Avoid_: Shortcut, tile, program
 
 **Web app**:
-An app that is Chromium opening one URL fullscreen, such as YouTube or Jellyfin.
+An app that is a browser (Firefox or Chromium) opening one URL fullscreen, such as YouTube or Jellyfin.
 _Avoid_: Bookmark, site, browser shortcut
 
 **Game**:
