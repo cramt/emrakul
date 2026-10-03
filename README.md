@@ -74,7 +74,7 @@ What it does today:
   | --- | --- |
   | D-pad, left stick past half way | arrows, repeating while held |
   | A | Enter |
-  | B | Alt+Left (back) |
+  | B | back: Alt+Left, or the entry's `X-Emrakul-Back` |
   | RB / LB | Tab / Shift+Tab, repeating while held |
   | X | left click, where the pointer is |
   | Y | k |
@@ -85,6 +85,13 @@ What it does today:
   | Left trackpad | scroll, wheel-style (finger up scrolls up) |
   | Menu | the on-screen keyboard, in an app |
   | Analog triggers, stick clicks, right stick, grips, Quick access | nothing yet |
+
+  Back is the one key apps disagree on. A regular site goes back in its
+  history on Alt+Left, the default. YouTube's TV UI and Jellyfin's TV layout
+  go back on Escape, so their entries say `X-Emrakul-Back=Escape`. The key
+  takes `Alt+Left` or `Escape`; anything else is logged and reads as
+  Alt+Left. A held B lets go of the keys it pressed, even if the app changed
+  in between.
 
   Web apps are driven by keyboard focus: the bumpers move it, A
   activates it. Home reads the same arrows and Enter: they move the focus

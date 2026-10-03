@@ -18,7 +18,7 @@ use smithay::backend::{
 };
 use tiny_skia::{FillRule, Pixmap, PixmapPaint, Transform};
 
-use crate::{gamepad::Layer, home, lifecycle::Session, state::Emrakul};
+use crate::{apps::Back, gamepad::Layer, home, lifecycle::Session, state::Emrakul};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -225,9 +225,10 @@ impl OnScreenKeyboard {
 impl Emrakul {
     /// What the controller drives right now.
     pub fn pad_layer(&self) -> Layer {
-        match self.session {
+        match &self.session {
             Session::Running(_, Some(_)) => Layer::Keyboard,
-            _ => Layer::App,
+            Session::Running(running, None) => Layer::App(running.back),
+            Session::Home(_) | Session::Ending(..) => Layer::App(Back::default()),
         }
     }
 

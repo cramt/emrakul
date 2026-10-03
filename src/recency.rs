@@ -95,6 +95,7 @@ mod tests {
             declared,
             brand: None,
             tv_profile: None,
+            back: Default::default(),
         }
     }
 

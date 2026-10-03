@@ -62,6 +62,8 @@ pub struct App {
     /// `X-Emrakul-Tv=<profile>`: the TV settings profile it runs under, in
     /// place of the one for apps.
     pub tv_profile: Option<String>,
+    /// `X-Emrakul-Back=<key>`: what the controller's B sends in it.
+    pub back: Back,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +75,30 @@ impl Rgb {
         let digits = hex.strip_prefix('#').filter(|d| d.len() == 6)?;
         let channel = |i: usize| u8::from_str_radix(digits.get(i..i + 2)?, 16).ok();
         Some(Self([channel(0)?, channel(2)?, channel(4)?]))
+    }
+}
+
+/// The key B sends for "back". Apps don't agree: a regular site goes back
+/// in its history on Alt+Left, while YouTube's TV UI and Jellyfin's TV
+/// layout go back on Escape, and under them Alt+Left walks browser history
+/// behind their router's back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Back {
+    /// Browser history back. The default.
+    #[default]
+    AltLeft,
+    /// `X-Emrakul-Back=Escape`.
+    Escape,
+}
+
+impl Back {
+    /// The values `X-Emrakul-Back` takes.
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "Alt+Left" => Some(Self::AltLeft),
+            "Escape" => Some(Self::Escape),
+            _ => None,
+        }
     }
 }
 
@@ -197,6 +223,12 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
     let Some(exec) = command("Exec") else {
         return Entry::NotAnApp;
     };
+    let back = get("X-Emrakul-Back").map_or(Back::default(), |value| {
+        Back::parse(value).unwrap_or_else(|| {
+            tracing::warn!(app = %id, value, "unknown X-Emrakul-Back, using Alt+Left");
+            Back::default()
+        })
+    });
     Entry::App(App {
         id,
         name: name.to_owned(),
@@ -208,6 +240,7 @@ fn parse_entry(id: AppId, text: &str) -> Entry {
         tv_profile: get("X-Emrakul-Tv")
             .filter(|p| !p.is_empty())
             .map(str::to_owned),
+        back,
     })
 }
 
@@ -322,8 +355,29 @@ mod tests {
                 declared: false,
                 brand: None,
                 tv_profile: None,
+                back: Back::AltLeft,
             }
         );
+    }
+
+    #[test]
+    fn an_entry_can_name_its_back_key() {
+        let back = |extra: &str| {
+            app(&format!(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\n{extra}\n"
+            ))
+            .back
+        };
+        assert_eq!(back(""), Back::AltLeft);
+        assert_eq!(back("X-Emrakul-Back=Escape"), Back::Escape);
+        assert_eq!(back("X-Emrakul-Back=Alt+Left"), Back::AltLeft);
+        for bad in ["escape", "Esc", "", "Escape;", "BackSpace"] {
+            assert_eq!(
+                back(&format!("X-Emrakul-Back={bad}")),
+                Back::AltLeft,
+                "{bad}"
+            );
+        }
     }
 
     #[test]

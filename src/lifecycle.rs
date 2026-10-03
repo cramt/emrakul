@@ -17,7 +17,7 @@ use smithay::reexports::calloop::{
 };
 
 use crate::{
-    apps::{self, App, AppId, Argv, Quit},
+    apps::{self, App, AppId, Argv, Back, Quit},
     gamepad::PadReader,
     osk::OnScreenKeyboard,
     state::Emrakul,
@@ -50,6 +50,7 @@ pub struct Running {
     pub id: AppId,
     quit: Quit,
     tv_profile: Option<String>,
+    pub back: Back,
     /// Also its process group, so a signal reaches whatever it forked.
     pid: Pid,
 }
@@ -154,6 +155,7 @@ impl Emrakul {
                 id: app.id,
                 quit: app.quit,
                 tv_profile: app.tv_profile,
+                back: app.back,
                 pid,
             },
             None,
