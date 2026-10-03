@@ -102,7 +102,7 @@ What it does today:
   Backspace. Menu again, or its Close key, closes it; Steam still goes Home.
   While it is open, nothing else on the controller reaches the app, and
   the trackpads do nothing. It opens with the focus on q.
-  ![The on-screen keyboard over a web app](docs/screenshots/keyboard.png)
+  ![The on-screen keyboard over KDE Connect](docs/screenshots/keyboard.png)
 - Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
   minutes unless configured. The TV shows No Signal and may power itself
   down. Activity is a controller button, a stick past a quarter of its
