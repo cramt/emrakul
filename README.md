@@ -112,6 +112,16 @@ What it does today:
   While it is open, nothing else on the controller reaches the app, and
   the trackpads do nothing. It opens with the focus on q.
   ![The on-screen keyboard over KDE Connect](docs/screenshots/keyboard.png)
+- Takes remote input over EI (libei's protocol) on
+  `$XDG_RUNTIME_DIR/emrakul-eis`: a keyboard, a pointer and an absolute
+  pointer, with buttons and scrolling. It behaves like a USB keyboard and
+  the trackpad: it is activity, the press that wakes the screen does
+  nothing else, keys go to Home or the app, and relative motion is in
+  client pixels (two screen pixels each at `scale = 2`). The keyboard's
+  keymap has one level per key, with a key of its own for each character
+  that needs Shift, because KDE Connect sends a character's keycode with no
+  modifiers (`A` would otherwise arrive as `a`); emrakul holds Shift around
+  those. Only senders are let in: nothing can capture input from it.
 - Blanks the screen (DPMS off) after `idle_timeout` with no activity, 10
   minutes unless configured. The TV shows No Signal and may power itself
   down. Activity is a controller button, a stick past a quarter of its

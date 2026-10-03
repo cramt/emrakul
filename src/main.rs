@@ -2,6 +2,8 @@ mod apps;
 mod config;
 mod cursor;
 mod drm;
+mod ei;
+mod eis_socket;
 mod gamepad;
 mod home;
 mod icons;
@@ -42,6 +44,9 @@ fn main() -> anyhow::Result<()> {
     )?;
     drm::start(&mut state, sources)?;
     state.watch_gamepads()?;
+    if let Err(err) = state.listen_for_remote_input() {
+        tracing::warn!("no remote input: {err:#}");
+    }
     state.arm_idle_timer();
     tracing::info!(socket = ?state.socket_name, "listening");
 

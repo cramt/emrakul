@@ -12,8 +12,9 @@ evdev = "0.13.2"
 facet = "0.46"
 facet-toml = "0.46"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+reis = { version = "0.7.1", features = ["calloop"] }
 resvg = { version = "0.48.1", default-features = false }
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["fs", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

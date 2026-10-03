@@ -25,7 +25,7 @@ The machine games are streamed from (saturn), running Sunshine.
 _Avoid_: Host, server
 
 **Idle**:
-No activity for the idle timeout while nothing that counts is inhibiting. Activity is a button, trigger or trackpad touch, a stick moved past its deadzone, the controller switching on, or a key press; gyro never counts. A web app playing video holds off idle; a game never does, so a forgotten paused game still goes idle.
+No activity for the idle timeout while nothing that counts is inhibiting. Activity is a button, trigger or trackpad touch, a stick moved past its deadzone, the controller switching on, a key press, or remote input; gyro never counts. A web app playing video holds off idle; a game never does, so a forgotten paused game still goes idle.
 _Avoid_: Inactive, away
 
 **Blanked**:
@@ -35,3 +35,7 @@ _Avoid_: Screensaver, sleep, suspend
 **On-screen keyboard**:
 The keyboard emrakul draws over a running app when Menu is pressed. What you pick on it is typed into the app as if on a real keyboard. While it is open, the controller drives it and nothing else reaches the app.
 _Avoid_: OSK (in prose), virtual keyboard, text input
+
+**Remote input**:
+A keyboard and pointer driven from another device, such as a phone running KDE Connect. It reaches the app the way a real keyboard and the trackpad do, and counts as activity. The program sending it asks the RemoteDesktop portal, which emrakul grants without asking.
+_Avoid_: Virtual input, injected input

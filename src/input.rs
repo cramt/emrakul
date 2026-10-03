@@ -83,7 +83,7 @@ impl Emrakul {
 
     /// A key on the seat keyboard. `woke` is whether its press just woke the
     /// screen, in which case it and its release do nothing.
-    fn key(&mut self, code: Keycode, key_state: KeyState, time: u32, woke: bool) {
+    pub fn key(&mut self, code: Keycode, key_state: KeyState, time: u32, woke: bool) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -120,13 +120,24 @@ impl Emrakul {
         }
     }
 
-    /// Moves the pointer, kept on the screen, to whatever surface is under it.
+    /// Moves the pointer by a trackpad stroke, kept on the screen.
     pub fn move_pointer(&mut self, by: Point<f64, Physical>) {
         let (Some(pointer), Some(size)) = (self.seat.get_pointer(), self.backend.output_size())
         else {
             return;
         };
         let to = pointer_target(pointer.current_location(), by, size, self.backend.scale());
+        self.warp_pointer(to);
+    }
+
+    /// Puts the pointer at `to`, kept on the screen, over whatever surface
+    /// is there.
+    pub fn warp_pointer(&mut self, to: Point<f64, Logical>) {
+        let (Some(pointer), Some(size)) = (self.seat.get_pointer(), self.backend.output_size())
+        else {
+            return;
+        };
+        let to = on_screen(to, size);
         let event = MotionEvent {
             location: to,
             serial: SERIAL_COUNTER.next_serial(),
@@ -145,13 +156,18 @@ impl Emrakul {
     }
 
     pub fn click(&mut self, state: ButtonState) {
+        self.button(LEFT_BUTTON, state);
+    }
+
+    /// `button` is a `BTN_*` code.
+    pub fn button(&mut self, button: u32, state: ButtonState) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
         let event = ButtonEvent {
             serial: SERIAL_COUNTER.next_serial(),
             time: self.clock.now().as_millis(),
-            button: LEFT_BUTTON,
+            button,
             state,
         };
         pointer.button(self, &event);
@@ -162,16 +178,43 @@ impl Emrakul {
     /// It is a touchpad-style scroll (`finger`), so the client scrolls
     /// smoothly and may coast once it ends.
     pub fn scroll(&mut self, by: Option<Point<f64, Physical>>) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
         let by = by.map(|by| by.to_logical(f64::from(self.backend.scale())));
         let frame = AxisFrame::new(self.clock.now().as_millis()).source(AxisSource::Finger);
-        let frame = match by {
+        self.axis(match by {
             Some(by) => frame
                 .value(Axis::Horizontal, by.x)
                 .value(Axis::Vertical, by.y),
             None => frame.stop(Axis::Horizontal).stop(Axis::Vertical),
+        });
+    }
+
+    /// Scrolls by `by` client pixels with nothing to say when it ends, the
+    /// way a remote touchpad scrolls.
+    pub fn scroll_continuous(&mut self, by: Point<f64, Logical>) {
+        let frame = AxisFrame::new(self.clock.now().as_millis()).source(AxisSource::Continuous);
+        self.axis(
+            frame
+                .value(Axis::Horizontal, by.x)
+                .value(Axis::Vertical, by.y),
+        );
+    }
+
+    /// Scrolls by wheel clicks, in 120ths of a click.
+    pub fn scroll_wheel(&mut self, by: Point<i32, Logical>) {
+        // libinput's 15 degrees of a click, which clients scroll by.
+        let value = |v120: i32| f64::from(v120) / 120.0 * 15.0;
+        let frame = AxisFrame::new(self.clock.now().as_millis())
+            .source(AxisSource::Wheel)
+            .value(Axis::Horizontal, value(by.x))
+            .v120(Axis::Horizontal, by.x)
+            .value(Axis::Vertical, value(by.y))
+            .v120(Axis::Vertical, by.y);
+        self.axis(frame);
+    }
+
+    fn axis(&mut self, frame: AxisFrame) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
         };
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -187,7 +230,10 @@ fn pointer_target(
     screen: Size<i32, Logical>,
     scale: i32,
 ) -> Point<f64, Logical> {
-    let to = from + by.to_logical(f64::from(scale));
+    on_screen(from + by.to_logical(f64::from(scale)), screen)
+}
+
+fn on_screen(to: Point<f64, Logical>, screen: Size<i32, Logical>) -> Point<f64, Logical> {
     Point::from((
         to.x.clamp(0.0, f64::from(screen.w - 1)),
         to.y.clamp(0.0, f64::from(screen.h - 1)),

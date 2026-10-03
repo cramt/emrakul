@@ -62,6 +62,7 @@ use crate::{
     config::Config,
     cursor::Cursor,
     drm::Backend,
+    ei::RemoteInput,
     gamepad::Gamepads,
     home,
     idle::Idle,
@@ -102,6 +103,7 @@ pub struct Emrakul {
     pub cursor: Cursor,
     /// `None` when no `[tv]` is configured.
     pub tv: Option<Tv>,
+    pub remote_input: RemoteInput,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -155,6 +157,7 @@ impl Emrakul {
             keyboard_view: osk::View::new()?,
             cursor: Cursor::new(),
             tv,
+            remote_input: RemoteInput::new()?,
             popups: PopupManager::default(),
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new::<Self>(&dh),
