@@ -7,6 +7,19 @@ self: {
   cfg = config.services.emrakul;
   toml = pkgs.formats.toml {};
   tty = "tty${toString cfg.vt}";
+
+  # Hands the compositor's socket to the user's systemd and D-Bus, then
+  # brings up the graphical session, so user services wanted by
+  # graphical-session.target (kdeconnectd, say) start inside it, the way
+  # they would under any desktop.
+  startSession = pkgs.writeShellApplication {
+    name = "emrakul-start-session";
+    runtimeInputs = [pkgs.dbus pkgs.systemd];
+    text = ''
+      dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_SESSION_TYPE
+      exec systemctl --user start emrakul-session.target
+    '';
+  };
 in {
   options.services.emrakul = {
     enable = lib.mkEnableOption "emrakul, the TV appliance compositor, as the machine's only session";
@@ -57,7 +70,11 @@ in {
             type = lib.types.listOf lib.types.str;
             default = [];
             example = ["foot"];
-            description = "Command started once the compositor is up.";
+            description = ''
+              Command started once the compositor is up. The module points it
+              at a script that starts `emrakul-session.target`, which binds
+              `graphical-session.target`; setting it skips that.
+            '';
           };
           scale = lib.mkOption {
             type = lib.types.ints.positive;
@@ -107,6 +124,18 @@ in {
         SUBSYSTEM=="hidraw", KERNELS=="*:28DE:*", TAG-="uaccess", MODE="0600", GROUP="root"
       '')
     ];
+
+    services.emrakul.settings.launch = lib.mkDefault [(lib.getExe startSession)];
+
+    # Bound to graphical-session.target the way sway-session.target and
+    # niri's units are. It goes when the PAM session ends and the user
+    # manager with it.
+    systemd.user.targets.emrakul-session = {
+      description = "emrakul session";
+      bindsTo = ["graphical-session.target"];
+      wants = ["graphical-session-pre.target"];
+      after = ["graphical-session-pre.target"];
+    };
 
     systemd.services."getty@${tty}".enable = false;
     systemd.services."autovt@${tty}".enable = false;

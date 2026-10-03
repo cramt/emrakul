@@ -197,6 +197,12 @@ gamepad node stays silent, and takes the Steam Controller's hidraw nodes
 away from the seat's user, since anything opening one makes `hid-steam`
 unregister the gamepad.
 
+Once the compositor is up, the module's default `launch` gives
+`WAYLAND_DISPLAY` to the user's systemd and D-Bus and starts
+`emrakul-session.target`, which binds `graphical-session.target`. A user
+service with `wantedBy = ["graphical-session.target"]` (kdeconnectd on
+ganymede) runs inside the session, as under any desktop.
+
 ## Development
 
 ```sh
