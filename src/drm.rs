@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use smithay::{
     backend::{
         allocator::{
@@ -40,13 +40,16 @@ use smithay::{
     },
     output::{Mode as WlMode, Output, PhysicalProperties, Subpixel},
     reexports::{
-        calloop::{LoopHandle, RegistrationToken},
+        calloop::{
+            Interest, LoopHandle, Mode as Trigger, PostAction, RegistrationToken, generic::Generic,
+        },
         drm::{
             Device as _,
             control::{ModeTypeFlags, connector, crtc},
         },
         input::Libinput,
         rustix::fs::OFlags,
+        udev,
         wayland_protocols::wp::{
             linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags,
             presentation_time::server::wp_presentation_feedback,
@@ -351,9 +354,10 @@ pub fn start(state: &mut Emrakul, sources: Sources) -> anyhow::Result<()> {
             .create_global_with_default_feedback::<Emrakul>(&dh, &feedback),
     );
 
-    let screen = connect_screen(state)?;
-    state.space.map_output(&screen.output, (0, 0));
-    state.backend.screen = Some(screen);
+    match connect_screen(state)? {
+        Some(screen) => attach_screen(state, screen),
+        None => wait_for_screen(state)?,
+    }
 
     let handle = state.loop_handle.clone();
     insert(
@@ -391,7 +395,50 @@ where
         .map_err(|e| anyhow::anyhow!("inserting an event source: {}", e.error))
 }
 
-fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Screen> {
+fn attach_screen(state: &mut Emrakul, screen: Screen) {
+    state.space.map_output(&screen.output, (0, 0));
+    state.backend.screen = Some(screen);
+    state.backend.request_redraw(&state.loop_handle);
+}
+
+/// A TV that's off has no EDID to offer, so the card lists only fallback
+/// modes, or nothing. That's no reason to die: a restart while the TV is off
+/// (a deploy, say) would crashloop until someone switches it on. Apps run
+/// without a screen meanwhile, and the card's hotplug brings it.
+fn wait_for_screen(state: &mut Emrakul) -> anyhow::Result<()> {
+    let monitor = udev::MonitorBuilder::new()?
+        .match_subsystem("drm")?
+        .listen()?;
+    insert(
+        &state.loop_handle.clone(),
+        Generic::new(monitor, Interest::READ, Trigger::Level),
+        |_, monitor, state: &mut Emrakul| {
+            let changed = monitor
+                .iter()
+                .any(|event| event.event_type() == udev::EventType::Change);
+            if !changed {
+                return Ok(PostAction::Continue);
+            }
+            match connect_screen(state) {
+                Ok(Some(screen)) => {
+                    attach_screen(state, screen);
+                    Ok(PostAction::Remove)
+                }
+                Ok(None) => Ok(PostAction::Continue),
+                Err(err) => {
+                    tracing::error!(?err, "connecting the screen");
+                    state.loop_signal.stop();
+                    Ok(PostAction::Remove)
+                }
+            }
+        },
+    )?;
+    Ok(())
+}
+
+/// `None` while the TV doesn't offer what the config asks for, which is how
+/// one that's switched off looks.
+fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Option<Screen>> {
     let backend = &mut state.backend;
     let wanted = &state.config.connector;
 
@@ -412,20 +459,23 @@ fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Screen> {
         }
     }
     let Some((connector, crtc)) = found else {
-        bail!(
-            "connector {wanted} is not connected (connected: {})",
-            seen.join(", ")
+        tracing::warn!(
+            connector = wanted,
+            connected = seen.join(", "),
+            "not connected, waiting for it"
         );
+        return Ok(None);
     };
     let crtc: crtc::Handle = crtc.with_context(|| format!("no free CRTC can drive {wanted}"))?;
 
-    let drm_mode = pick_mode(connector.modes(), state.config.mode).with_context(|| match state
-        .config
-        .mode
-    {
-        Some(mode) => format!("{wanted} offers no {mode} mode"),
-        None => format!("{wanted} offers no modes"),
-    })?;
+    let Some(drm_mode) = pick_mode(connector.modes(), state.config.mode) else {
+        tracing::warn!(
+            connector = wanted,
+            mode = ?state.config.mode,
+            "doesn't offer the mode (is the TV off?), waiting for it"
+        );
+        return Ok(None);
+    };
     tracing::info!(connector = wanted, mode = ?drm_mode, "setting up the screen");
 
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
@@ -476,14 +526,14 @@ fn connect_screen(state: &mut Emrakul) -> anyhow::Result<Screen> {
 
     let feedback = surface_feedback(backend.render_node, &backend.renderer, &drm_output)?;
     let frame_duration = Duration::from_secs_f64(1_000.0 / wl_mode.refresh as f64);
-    Ok(Screen {
+    Ok(Some(Screen {
         output,
         feedback,
         drm_output,
         frame_duration,
         scanout: None,
         foreground_presentation: None,
-    })
+    }))
 }
 
 fn logical_size(output: &Output) -> Option<Size<i32, Logical>> {
